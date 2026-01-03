@@ -1,0 +1,1031 @@
+# app/api/v1/organizational_levels_api.rb
+module V1
+  class OrganizationalLevelsApi < Grape::API
+    resource :organizational_levels do
+      # GET /api/v1/organizational_levels
+      # Lista todos los niveles organizacionales
+      desc "Lista todos los niveles organizacionales" do
+        success Entities::OrganizationalLevelEntity
+        failure [ [ 401, "No autorizado" ], [ 500, "Error interno" ] ]
+      end
+      params do
+        optional :include_nodes, type: Boolean, desc: "Incluir nodos en la respuesta"
+        optional :include_counts, type: Boolean, desc: "Incluir contadores"
+      end
+      get do
+        levels = OrganizationalLevel.kept.ordered
+
+        present levels,
+                with: Entities::OrganizationalLevelEntity,
+                include_nodes: params[:include_nodes],
+                include_counts: params[:include_counts]
+      end
+
+      # GET /api/v1/organizational_levels/:id
+      # Obtiene un nivel específico
+      desc "Obtiene un nivel organizacional por ID" do
+        success Entities::OrganizationalLevelEntity
+        failure [ [ 404, "No encontrado" ], [ 500, "Error interno" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del nivel organizacional"
+        optional :include_nodes, type: Boolean, desc: "Incluir nodos en la respuesta"
+        optional :include_counts, type: Boolean, desc: "Incluir contadores"
+      end
+      get ":id" do
+        level = OrganizationalLevel.kept.find(params[:id])
+
+        present level,
+                with: Entities::OrganizationalLevelEntity,
+                include_nodes: params[:include_nodes],
+                include_counts: params[:include_counts]
+      end
+
+      # POST /api/v1/organizational_levels
+      # Crea un nuevo nivel organizacional
+      desc "Crea un nuevo nivel organizacional" do
+        success Entities::OrganizationalLevelEntity
+        failure [ [ 400, "Parámetros inválidos" ], [ 422, "Error de validación" ] ]
+      end
+      params do
+        requires :name, type: String, desc: "Nombre del nivel"
+        requires :level_order, type: Integer, desc: "Orden del nivel en la jerarquía"
+        optional :description, type: String, desc: "Descripción del nivel"
+      end
+      post do
+        service = OrganizationalLevels::Creator.new(
+          name: params[:name],
+          level_order: params[:level_order],
+          description: params[:description]
+        )
+
+        if service.call
+          present service.level, with: Entities::OrganizationalLevelEntity
+        else
+          error_response_from_service(service)
+        end
+      end
+
+      # PUT /api/v1/organizational_levels/:id
+      # Actualiza un nivel organizacional
+      desc "Actualiza un nivel organizacional" do
+        success Entities::OrganizationalLevelEntity
+        failure [ [ 404, "No encontrado" ], [ 422, "Error de validación" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del nivel organizacional"
+        optional :name, type: String, desc: "Nombre del nivel"
+        optional :level_order, type: Integer, desc: "Orden del nivel"
+        optional :description, type: String, desc: "Descripción del nivel"
+      end
+      put ":id" do
+        level = OrganizationalLevel.kept.find(params[:id])
+
+        service = OrganizationalLevels::Updater.new(
+          level,
+          name: params[:name],
+          level_order: params[:level_order],
+          description: params[:description]
+        )
+
+        if service.call
+          present service.level, with: Entities::OrganizationalLevelEntity
+        else
+          error_response_from_service(service)
+        end
+      end
+
+      # DELETE /api/v1/organizational_levels/:id
+      # Elimina (soft delete) un nivel organizacional
+      desc "Elimina un nivel organizacional" do
+        success code: 200, message: "Nivel eliminado exitosamente"
+        failure [ [ 404, "No encontrado" ], [ 422, "No se puede eliminar" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del nivel organizacional"
+      end
+      delete ":id" do
+        level = OrganizationalLevel.kept.find(params[:id])
+
+        service = OrganizationalLevels::Destroyer.new(level)
+
+        if service.call
+          success_response(nil, "Nivel organizacional eliminado exitosamente")
+        else
+          error_response_from_service(service)
+        end
+      end
+    end
+  end
+end
+
+# app/api/v1/organizational_nodes_api.rb
+module V1
+  class OrganizationalNodesApi < Grape::API
+    resource :organizational_nodes do
+      # GET /api/v1/organizational_nodes
+      # Lista nodos con filtros opcionales
+      desc "Lista nodos organizacionales con filtros" do
+        success Entities::OrganizationalNodeEntity
+      end
+      params do
+        optional :level_id, type: Integer, desc: "Filtrar por nivel organizacional"
+        optional :parent_id, type: Integer, desc: "Filtrar por nodo padre"
+        optional :name, type: String, desc: "Buscar por nombre (parcial)"
+        optional :code, type: String, desc: "Buscar por código"
+        optional :roots_only, type: Boolean, desc: "Solo nodos raíz"
+        optional :leaves_only, type: Boolean, desc: "Solo nodos hoja"
+        optional :with_vehicles, type: Boolean, desc: "Solo nodos con vehículos"
+        optional :order_by, type: String, desc: "Campo de ordenamiento", values: [ "name", "level", "depth" ]
+        optional :order_direction, type: String, desc: "Dirección", values: [ "asc", "desc" ], default: "asc"
+        optional :include_level, type: Boolean, desc: "Incluir nivel organizacional"
+        optional :include_counts, type: Boolean, desc: "Incluir contadores"
+        optional :include_path, type: Boolean, desc: "Incluir ruta completa"
+      end
+      get do
+        query = OrganizationalNodesQuery.new
+
+        filters = {
+          level_id: params[:level_id],
+          name: params[:name],
+          code: params[:code],
+          roots_only: params[:roots_only],
+          leaves_only: params[:leaves_only],
+          with_vehicles: params[:with_vehicles],
+          order_by: params[:order_by] || "name",
+          order_direction: params[:order_direction]
+        }
+
+        # Filtro por parent_id si se especifica
+        if params[:parent_id].present?
+          parent_node = OrganizationalNode.kept.find(params[:parent_id])
+          filters[:parent_node] = parent_node
+          filters[:include_parent] = false
+        end
+
+        nodes = query.call(filters)
+
+        present nodes,
+                with: Entities::OrganizationalNodeEntity,
+                include_level: params[:include_level],
+                include_counts: params[:include_counts],
+                include_path: params[:include_path]
+      end
+
+      # GET /api/v1/organizational_nodes/tree
+      # Obtiene el árbol jerárquico completo
+      desc "Obtiene el árbol jerárquico completo" do
+        success Entities::OrganizationalTreeEntity
+      end
+      params do
+        optional :root_node_id, type: Integer, desc: "ID del nodo raíz (opcional)"
+        optional :max_depth, type: Integer, desc: "Profundidad máxima"
+        optional :include_vehicles, type: Boolean, desc: "Incluir vehículos"
+        optional :include_counts, type: Boolean, desc: "Incluir contadores", default: true
+      end
+      get :tree do
+        root_node = params[:root_node_id].present? ?
+                    OrganizationalNode.kept.find(params[:root_node_id]) :
+                    nil
+
+        service = OrganizationalNodes::TreeBuilder.new(root_node, {
+          include_vehicles: params[:include_vehicles],
+          include_counts: params[:include_counts],
+          max_depth: params[:max_depth]
+        })
+
+        tree = service.call
+
+        if service.success?
+          present tree, with: Entities::OrganizationalTreeEntity
+        else
+          error_response_from_service(service)
+        end
+      end
+
+      # GET /api/v1/organizational_nodes/:id
+      # Obtiene un nodo específico
+      desc "Obtiene un nodo organizacional por ID" do
+        success Entities::OrganizationalNodeEntity
+        failure [ [ 404, "No encontrado" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del nodo"
+        optional :include_level, type: Boolean, desc: "Incluir nivel"
+        optional :include_parent, type: Boolean, desc: "Incluir padre"
+        optional :include_children, type: Boolean, desc: "Incluir hijos"
+        optional :include_vehicles, type: Boolean, desc: "Incluir vehículos"
+        optional :include_counts, type: Boolean, desc: "Incluir contadores"
+        optional :include_path, type: Boolean, desc: "Incluir ruta completa"
+      end
+      get ":id" do
+        node = OrganizationalNode.kept.find(params[:id])
+
+        # Preparar opciones de presentación
+        presentation_opts = {
+          include_level: params[:include_level],
+          include_counts: params[:include_counts],
+          include_path: params[:include_path]
+        }
+
+        # Para parent y children, no pasar las opciones recursivamente
+        # Esto evita loops infinitos
+        if params[:include_parent]
+          presentation_opts[:include_parent] = true
+        end
+
+        if params[:include_children]
+          presentation_opts[:include_children] = true
+        end
+
+        if params[:include_vehicles]
+          presentation_opts[:include_vehicles] = true
+        end
+
+        present node, with: Entities::OrganizationalNodeEntity, **presentation_opts
+      end
+
+      # GET /api/v1/organizational_nodes/:id/descendants
+      # Obtiene los descendientes de un nodo
+      desc "Obtiene los descendientes de un nodo" do
+        success Entities::OrganizationalNodeEntity
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del nodo"
+        optional :include_self, type: Boolean, desc: "Incluir el nodo mismo"
+        optional :include_counts, type: Boolean, desc: "Incluir contadores"
+      end
+      get ":id/descendants" do
+        node = OrganizationalNode.kept.find(params[:id])
+
+        descendants = params[:include_self] ?
+                      node.self_and_descendants :
+                      node.descendants
+
+        present descendants,
+                with: Entities::OrganizationalNodeEntity,
+                include_counts: params[:include_counts]
+      end
+
+      # GET /api/v1/organizational_nodes/:id/ancestors
+      # Obtiene los ancestros de un nodo
+      desc "Obtiene los ancestros de un nodo" do
+        success Entities::OrganizationalNodeEntity
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del nodo"
+        optional :include_self, type: Boolean, desc: "Incluir el nodo mismo"
+      end
+      get ":id/ancestors" do
+        node = OrganizationalNode.kept.find(params[:id])
+
+        ancestors = params[:include_self] ?
+                    node.self_and_ancestors :
+                    node.ancestors
+
+        present ancestors, with: Entities::OrganizationalNodeEntity
+      end
+
+      # POST /api/v1/organizational_nodes
+      # Crea un nuevo nodo
+      desc "Crea un nuevo nodo organizacional" do
+        success Entities::OrganizationalNodeEntity
+        failure [ [ 422, "Error de validación" ] ]
+      end
+      params do
+        requires :name, type: String, desc: "Nombre del nodo"
+        requires :organizational_level_id, type: Integer, desc: "ID del nivel"
+        optional :parent_id, type: Integer, desc: "ID del nodo padre"
+        optional :code, type: String, desc: "Código único"
+        optional :description, type: String, desc: "Descripción"
+      end
+      post do
+        service = OrganizationalNodes::Creator.new(
+          name: params[:name],
+          organizational_level_id: params[:organizational_level_id],
+          parent_id: params[:parent_id],
+          code: params[:code],
+          description: params[:description]
+        )
+
+        if service.call
+          present service.node, with: Entities::OrganizationalNodeEntity
+        else
+          error_response_from_service(service)
+        end
+      end
+
+      # PUT /api/v1/organizational_nodes/:id
+      # Actualiza un nodo (incluye mover a otro padre)
+      desc "Actualiza un nodo organizacional" do
+        success Entities::OrganizationalNodeEntity
+        failure [ [ 404, "No encontrado" ], [ 422, "Error de validación" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del nodo"
+        optional :name, type: String, desc: "Nombre del nodo"
+        optional :parent_id, type: Integer, desc: "ID del nuevo padre (para mover el nodo)"
+        optional :code, type: String, desc: "Código único"
+        optional :description, type: String, desc: "Descripción"
+      end
+      put ":id" do
+        node = OrganizationalNode.kept.find(params[:id])
+
+        service = OrganizationalNodes::Updater.new(
+          node,
+          name: params[:name],
+          parent_id: params[:parent_id],
+          code: params[:code],
+          description: params[:description]
+        )
+
+        if service.call
+          response_data = {
+            node: service.node,
+            parent_moved: service.parent_moved?
+          }
+          present service.node, with: Entities::OrganizationalNodeEntity
+        else
+          error_response_from_service(service)
+        end
+      end
+
+      # DELETE /api/v1/organizational_nodes/:id
+      # Elimina un nodo
+      desc "Elimina un nodo organizacional" do
+        success code: 200, message: "Nodo eliminado"
+        failure [ [ 404, "No encontrado" ], [ 422, "No se puede eliminar" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del nodo"
+        optional :strategy, type: String, desc: "Estrategia de eliminación",
+                 values: [ "restrict", "cascade" ], default: "restrict"
+      end
+      delete ":id" do
+        node = OrganizationalNode.kept.find(params[:id])
+
+        service = OrganizationalNodes::Destroyer.new(
+          node,
+          strategy: params[:strategy].to_sym
+        )
+
+        if service.call
+          message = "Nodo eliminado exitosamente (#{service.deleted_count} nodo(s) afectado(s))"
+          success_response({ deleted_count: service.deleted_count }, message)
+        else
+          error_response_from_service(service)
+        end
+      end
+    end
+  end
+end
+
+# app/api/v1/user_accesses_api.rb
+module V1
+  class UserAccessesApi < Grape::API
+    # Endpoints para gestión de usuarios
+    resource :users do
+      # GET /api/v1/users
+      # Lista usuarios
+      desc "Lista usuarios" do
+        success Entities::UserEntity
+      end
+      params do
+        optional :email, type: String, desc: "Filtrar por email"
+        optional :name, type: String, desc: "Filtrar por nombre"
+        optional :with_access, type: Boolean, desc: "Solo usuarios con accesos"
+        optional :include_access_info, type: Boolean, desc: "Incluir info de accesos"
+      end
+      get do
+        users = User.kept
+        users = users.by_email(params[:email]) if params[:email].present?
+        users = users.by_name(params[:name]) if params[:name].present?
+        users = users.with_access if params[:with_access]
+
+        present users,
+                with: Entities::UserEntity,
+                include_access_info: params[:include_access_info]
+      end
+
+      # GET /api/v1/users/:id
+      # Obtiene un usuario
+      desc "Obtiene un usuario por ID" do
+        success Entities::UserEntity
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del usuario"
+        optional :include_accessible_nodes, type: Boolean, desc: "Incluir nodos accesibles"
+      end
+      get ":id" do
+        user = User.kept.find(params[:id])
+
+        present user,
+                with: Entities::UserEntity,
+                include_access_info: true,
+                include_accessible_nodes: params[:include_accessible_nodes]
+      end
+
+      # GET /api/v1/users/:id/access_tree
+      # Obtiene el árbol completo con indicadores de acceso del usuario
+      # Este endpoint es para la vista de edición de accesos del usuario
+      desc "Obtiene árbol completo con accesos del usuario marcados" do
+        success code: 200
+        detail "Retorna el árbol organizacional completo con flags indicando qué nodos tiene acceso el usuario"
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del usuario"
+        optional :max_depth, type: Integer, desc: "Profundidad máxima del árbol"
+      end
+      get ":id/access_tree" do
+        user = User.kept.find(params[:id])
+
+        # Obtener nodos con acceso directo (los que están en NodeUserAccess)
+        direct_access_nodes = user.accessible_nodes
+        direct_access_node_ids = direct_access_nodes.pluck(:id)
+
+        # Obtener todos los nodos visibles por herencia
+        visible_node_ids = user.visible_nodes.pluck(:id)
+
+        # Construir árbol completo
+        service = OrganizationalNodes::TreeBuilder.new(nil, {
+          include_counts: true,
+          include_vehicles: false,
+          max_depth: params[:max_depth]
+        })
+
+        tree = service.call
+
+        if service.success?
+          # Agregar información de acceso a cada nodo del árbol
+          annotated_tree = annotate_tree_with_access(tree, direct_access_node_ids, visible_node_ids)
+
+          success_response({
+            tree: annotated_tree,
+            user: {
+              id: user.id,
+              name: user.full_name,
+              email: user.email
+            },
+            summary: {
+              total_nodes: OrganizationalNode.count,
+              direct_access_count: direct_access_node_ids.count,
+              inherited_access_count: visible_node_ids.count - direct_access_node_ids.count,
+              total_visible_count: visible_node_ids.count,
+              no_access_count: OrganizationalNode.count - visible_node_ids.count
+            },
+            legend: {
+              direct: "Nodo con acceso directo asignado (checkbox seleccionado)",
+              inherited: "Nodo visible por herencia (descendiente de un nodo con acceso)",
+              none: "Sin acceso (puede ser asignado)"
+            }
+          })
+        else
+          error_response_from_service(service)
+        end
+      end
+
+      # Helper para anotar el árbol con información de acceso
+      helpers do
+        # Anota recursivamente el árbol con información de acceso
+        def annotate_tree_with_access(tree, direct_ids, visible_ids)
+          return [] if tree.blank?
+
+          tree = [ tree ] unless tree.is_a?(Array)
+
+          tree.map do |node|
+            annotated_node = node.dup
+
+            node_id = node[:id]
+            has_direct = direct_ids.include?(node_id)
+            is_visible = visible_ids.include?(node_id)
+
+            # Determinar el tipo de acceso
+            access_type = if has_direct
+              "direct"
+            elsif is_visible
+              "inherited"
+            else
+              "none"
+            end
+
+            # Agregar información de acceso
+            annotated_node[:access] = {
+              has_direct_access: has_direct,
+              is_visible_by_inheritance: is_visible && !has_direct,
+              is_visible: is_visible,
+              type: access_type,
+              # Para el frontend: indica si el checkbox debe estar marcado
+              checked: has_direct,
+              # Para el frontend: indica si debe mostrarse como heredado (ej: color diferente)
+              inherited: is_visible && !has_direct,
+              # Para el frontend: indica si está disponible para asignar
+              assignable: !has_direct
+            }
+
+            # Anotar hijos recursivamente
+            if node[:children].present? && node[:children].is_a?(Array)
+              annotated_node[:children] = annotate_tree_with_access(
+                node[:children],
+                direct_ids,
+                visible_ids
+              )
+            end
+
+            annotated_node
+          end
+        end
+      end
+
+      # GET /api/v1/users/:id/accesses
+      # Lista los accesos de un usuario
+      desc "Lista los accesos de un usuario" do
+        success Entities::NodeUserAccessEntity
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del usuario"
+        optional :include_node, type: Boolean, desc: "Incluir información del nodo"
+        optional :include_coverage, type: Boolean, desc: "Incluir métricas de cobertura"
+      end
+      get ":id/accesses" do
+        user = User.kept.find(params[:id])
+        accesses = user.node_user_accesses.kept
+
+        present accesses,
+                with: Entities::NodeUserAccessEntity,
+                include_node: params[:include_node],
+                include_coverage: params[:include_coverage]
+      end
+
+      # GET /api/v1/users/:id/visible_nodes
+      # Obtiene todos los nodos visibles para un usuario
+      desc "Obtiene nodos visibles para un usuario (con herencia)" do
+        success Entities::OrganizationalNodeEntity
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del usuario"
+        optional :include_counts, type: Boolean, desc: "Incluir contadores"
+      end
+      get ":id/visible_nodes" do
+        user = User.kept.find(params[:id])
+        visible_nodes = user.visible_nodes
+
+        present visible_nodes,
+                with: Entities::OrganizationalNodeEntity,
+                include_counts: params[:include_counts]
+      end
+
+      # GET /api/v1/users/:id/visible_vehicles
+      # Obtiene todos los vehículos visibles para un usuario
+      desc "Obtiene vehículos visibles para un usuario" do
+        success Entities::VehicleEntity
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del usuario"
+        optional :include_location, type: Boolean, desc: "Incluir ubicación"
+      end
+      get ":id/visible_vehicles" do
+        user = User.kept.find(params[:id])
+        visible_vehicles = user.visible_vehicles
+
+        present visible_vehicles,
+                with: Entities::VehicleEntity,
+                include_location: params[:include_location]
+      end
+
+      # GET /api/v1/users/:id/visibility_scope
+      # Calcula el alcance de visibilidad de un usuario
+      desc "Calcula el alcance de visibilidad de un usuario" do
+        success code: 200
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del usuario"
+      end
+      get ":id/visibility_scope" do
+        user = User.kept.find(params[:id])
+        calculator = UserAccess::VisibilityCalculator.new(user)
+
+        scope = calculator.visibility_scope
+        success_response(scope)
+      end
+
+      # POST /api/v1/users/:id/grant_access
+      # Otorga acceso a un nodo
+      desc "Otorga acceso a un nodo organizacional" do
+        success Entities::NodeUserAccessEntity
+        failure [ [ 422, "Error de validación" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del usuario"
+        requires :node_id, type: Integer, desc: "ID del nodo organizacional"
+        optional :granted_by_id, type: Integer, desc: "ID del usuario que otorga el acceso"
+      end
+      post ":id/grant_access" do
+        user = User.kept.find(params[:id])
+        granted_by = params[:granted_by_id].present? ? User.kept.find(params[:granted_by_id]) : nil
+
+        manager = UserAccess::AccessManager.new(user)
+
+        if manager.grant_access(params[:node_id], granted_by: granted_by)
+          access = manager.granted_accesses.first
+          present access,
+                  with: Entities::NodeUserAccessEntity,
+                  include_node: true
+        else
+          error_response_from_service(manager)
+        end
+      end
+
+      # POST /api/v1/users/:id/grant_multiple_accesses
+      # Otorga acceso a múltiples nodos
+      desc "Otorga acceso a múltiples nodos" do
+        success Entities::NodeUserAccessEntity
+        failure [ [ 422, "Error de validación" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del usuario"
+        requires :node_ids, type: Array[Integer], desc: "Array de IDs de nodos"
+        optional :granted_by_id, type: Integer, desc: "ID del usuario que otorga"
+      end
+      post ":id/grant_multiple_accesses" do
+        user = User.kept.find(params[:id])
+        granted_by = params[:granted_by_id].present? ? User.kept.find(params[:granted_by_id]) : nil
+
+        manager = UserAccess::AccessManager.new(user)
+
+        if manager.grant_multiple_accesses(params[:node_ids], granted_by: granted_by)
+          present manager.granted_accesses,
+                  with: Entities::NodeUserAccessEntity,
+                  include_node: true
+        else
+          error_response_from_service(manager)
+        end
+      end
+
+      # DELETE /api/v1/users/:id/revoke_access
+      # Revoca acceso a un nodo
+      desc "Revoca acceso a un nodo" do
+        success code: 200, message: "Acceso revocado"
+        failure [ [ 422, "Error" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del usuario"
+        requires :node_id, type: Integer, desc: "ID del nodo"
+      end
+      delete ":id/revoke_access" do
+        user = User.kept.find(params[:id])
+
+        manager = UserAccess::AccessManager.new(user)
+
+        if manager.revoke_access(params[:node_id])
+          success_response(nil, "Acceso revocado exitosamente")
+        else
+          error_response_from_service(manager)
+        end
+      end
+
+      # PUT /api/v1/users/:id/replace_all_accesses
+      # Reemplaza TODOS los accesos del usuario
+      desc "Reemplaza todos los accesos del usuario" do
+        success Entities::NodeUserAccessEntity
+        failure [ [ 422, "Error de validación" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del usuario"
+        requires :node_ids, type: Array[Integer], desc: "Nueva lista de IDs de nodos"
+        optional :granted_by_id, type: Integer, desc: "ID del usuario que realiza el cambio"
+      end
+      put ":id/replace_all_accesses" do
+        user = User.kept.find(params[:id])
+        granted_by = params[:granted_by_id].present? ? User.kept.find(params[:granted_by_id]) : nil
+
+        manager = UserAccess::AccessManager.new(user)
+
+        if manager.replace_all_accesses(params[:node_ids], granted_by: granted_by)
+          response_data = {
+            granted: manager.granted_accesses_info,
+            revoked: manager.revoked_accesses_info
+          }
+          success_response(response_data, "Accesos actualizados exitosamente")
+        else
+          error_response_from_service(manager)
+        end
+      end
+    end
+
+    # Endpoints para análisis de accesos
+    resource :accesses do
+      # GET /api/v1/accesses
+      # Lista todos los accesos con filtros
+      desc "Lista accesos con filtros" do
+        success Entities::NodeUserAccessEntity
+      end
+      params do
+        optional :user_id, type: Integer, desc: "Filtrar por usuario"
+        optional :node_id, type: Integer, desc: "Filtrar por nodo"
+        optional :level_id, type: Integer, desc: "Filtrar por nivel"
+        optional :recent_days, type: Integer, desc: "Accesos recientes (últimos N días)"
+        optional :redundant, type: Boolean, desc: "Solo accesos redundantes"
+        optional :include_user, type: Boolean, desc: "Incluir usuario"
+        optional :include_node, type: Boolean, desc: "Incluir nodo"
+      end
+      get do
+        query = UserAccessQuery.new
+
+        filters = {
+          user: params[:user_id].present? ? User.kept.find(params[:user_id]) : nil,
+          node: params[:node_id].present? ? OrganizationalNode.kept.find(params[:node_id]) : nil,
+          level_id: params[:level_id],
+          recent_days: params[:recent_days],
+          redundant: params[:redundant]
+        }
+
+        accesses = query.call(filters)
+
+        present accesses,
+                with: Entities::NodeUserAccessEntity,
+                include_user: params[:include_user],
+                include_node: params[:include_node]
+      end
+
+      # GET /api/v1/accesses/statistics
+      # Estadísticas de accesos
+      desc "Obtiene estadísticas de accesos" do
+        success code: 200
+      end
+      get :statistics do
+        query = UserAccessQuery.new
+        stats = query.statistics
+
+        success_response(stats)
+      end
+
+      # GET /api/v1/accesses/visibility_coverage
+      # Análisis de cobertura de visibilidad
+      desc "Análisis de cobertura de visibilidad por usuario" do
+        success code: 200
+      end
+      get :visibility_coverage do
+        query = UserAccessQuery.new
+        coverage = query.visibility_coverage
+
+        # Transformar hash con user objects a formato serializable
+        coverage_data = coverage.transform_values do |info|
+          {
+            user_name: info[:user].full_name,
+            user_email: info[:user].email,
+            direct_nodes: info[:direct_nodes],
+            visible_nodes: info[:visible_nodes],
+            visible_vehicles: info[:visible_vehicles]
+          }
+        end
+
+        success_response(coverage_data)
+      end
+
+      # GET /api/v1/accesses/matrix
+      # Matriz de acceso (auditoría)
+      desc "Obtiene matriz de acceso para auditoría" do
+        success code: 200
+      end
+      get :matrix do
+        query = UserAccessQuery.new
+        matrix = query.access_matrix
+
+        success_response(matrix)
+      end
+    end
+  end
+end
+
+# app/api/v1/vehicles_api.rb
+module V1
+  class VehiclesApi < Grape::API
+    resource :vehicles do
+      # GET /api/v1/vehicles
+      # Lista vehículos con filtros
+      desc "Lista vehículos con filtros opcionales" do
+        success Entities::VehicleEntity
+      end
+      params do
+        optional :plate, type: String, desc: "Filtrar por matrícula (parcial)"
+        optional :brand, type: String, desc: "Filtrar por marca (parcial)"
+        optional :model, type: String, desc: "Filtrar por modelo (parcial)"
+        optional :year, type: Integer, desc: "Filtrar por año"
+        optional :vin, type: String, desc: "Filtrar por VIN"
+        optional :node_id, type: Integer, desc: "Filtrar por nodo específico"
+        optional :branch_node_id, type: Integer, desc: "Filtrar por rama (nodo + descendientes)"
+        optional :level_id, type: Integer, desc: "Filtrar por nivel organizacional"
+        optional :search, type: String, desc: "Búsqueda general"
+        optional :user_id, type: Integer, desc: "Filtrar por visibilidad de usuario"
+        optional :order_by, type: String, desc: "Campo de ordenamiento",
+                 values: [ "plate", "brand", "year", "created_at", "node" ], default: "created_at"
+        optional :order_direction, type: String, desc: "Dirección",
+                 values: [ "asc", "desc" ], default: "desc"
+        optional :include_location, type: Boolean, desc: "Incluir ubicación organizacional"
+        optional :include_node, type: Boolean, desc: "Incluir nodo completo"
+      end
+      get do
+        query = VehiclesQuery.new
+
+        filters = {
+          plate: params[:plate],
+          brand: params[:brand],
+          model: params[:model],
+          year: params[:year],
+          vin: params[:vin],
+          node_id: params[:node_id],
+          level_id: params[:level_id],
+          search: params[:search],
+          order_by: params[:order_by],
+          order_direction: params[:order_direction]
+        }
+
+        # Filtro por rama si se especifica
+        if params[:branch_node_id].present?
+          filters[:branch_node] = OrganizationalNode.kept.find(params[:branch_node_id])
+        end
+
+        # Filtro por visibilidad de usuario
+        if params[:user_id].present?
+          filters[:user] = User.kept.find(params[:user_id])
+        end
+
+        vehicles = query.call(filters)
+
+        present vehicles,
+                with: Entities::VehicleEntity,
+                include_location: params[:include_location],
+                include_node: params[:include_node]
+      end
+
+      # GET /api/v1/vehicles/statistics
+      # Obtiene estadísticas de vehículos
+      desc "Obtiene estadísticas de vehículos" do
+        success code: 200
+      end
+      params do
+        optional :node_id, type: Integer, desc: "Estadísticas de un nodo específico"
+        optional :branch_node_id, type: Integer, desc: "Estadísticas de una rama"
+        optional :user_id, type: Integer, desc: "Estadísticas de visibilidad de usuario"
+      end
+      get :statistics do
+        query = VehiclesQuery.new
+
+        filters = {}
+
+        if params[:node_id].present?
+          filters[:node_id] = params[:node_id]
+        elsif params[:branch_node_id].present?
+          filters[:branch_node] = OrganizationalNode.kept.find(params[:branch_node_id])
+        elsif params[:user_id].present?
+          filters[:user] = User.kept.find(params[:user_id])
+        end
+
+        query.call(filters)
+        stats = query.statistics
+
+        success_response(stats)
+      end
+
+      # GET /api/v1/vehicles/:id
+      # Obtiene un vehículo específico
+      desc "Obtiene un vehículo por ID" do
+        success Entities::VehicleEntity
+        failure [ [ 404, "No encontrado" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del vehículo"
+        optional :include_location, type: Boolean, desc: "Incluir ubicación"
+        optional :include_node, type: Boolean, desc: "Incluir nodo completo"
+      end
+      get ":id" do
+        vehicle = Vehicle.kept.find(params[:id])
+
+        present vehicle,
+                with: Entities::VehicleEntity,
+                include_location: params[:include_location],
+                include_node: params[:include_node]
+      end
+
+      # POST /api/v1/vehicles
+      # Crea un nuevo vehículo y lo asigna a un nodo
+      desc "Crea un nuevo vehículo" do
+        success Entities::VehicleEntity
+        failure [ [ 422, "Error de validación" ] ]
+      end
+      params do
+        requires :plate, type: String, desc: "Matrícula del vehículo"
+        requires :organizational_node_id, type: Integer, desc: "ID del nodo organizacional"
+        optional :brand, type: String, desc: "Marca"
+        optional :model, type: String, desc: "Modelo"
+        optional :year, type: Integer, desc: "Año"
+        optional :vin, type: String, desc: "VIN"
+        optional :description, type: String, desc: "Descripción"
+      end
+      post do
+        service = Vehicles::Assigner.new(
+          plate: params[:plate],
+          organizational_node_id: params[:organizational_node_id],
+          brand: params[:brand],
+          model: params[:model],
+          year: params[:year],
+          vin: params[:vin],
+          description: params[:description]
+        )
+
+        if service.call
+          present service.vehicle,
+                  with: Entities::VehicleEntity,
+                  include_location: true
+        else
+          error_response_from_service(service)
+        end
+      end
+
+      # PUT /api/v1/vehicles/:id
+      # Actualiza un vehículo
+      desc "Actualiza un vehículo" do
+        success Entities::VehicleEntity
+        failure [ [ 404, "No encontrado" ], [ 422, "Error de validación" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del vehículo"
+        optional :plate, type: String, desc: "Matrícula"
+        optional :brand, type: String, desc: "Marca"
+        optional :model, type: String, desc: "Modelo"
+        optional :year, type: Integer, desc: "Año"
+        optional :vin, type: String, desc: "VIN"
+        optional :description, type: String, desc: "Descripción"
+      end
+      put ":id" do
+        vehicle = Vehicle.kept.find(params[:id])
+
+        update_params = {}
+        update_params[:plate] = params[:plate] if params[:plate].present?
+        update_params[:brand] = params[:brand] if params[:brand].present?
+        update_params[:model] = params[:model] if params[:model].present?
+        update_params[:year] = params[:year] if params[:year].present?
+        update_params[:vin] = params[:vin] if params[:vin].present?
+        update_params[:description] = params[:description] if params.key?(:description)
+
+        if vehicle.update(update_params)
+          present vehicle, with: Entities::VehicleEntity
+        else
+          error!({ error: "Error al actualizar", details: vehicle.errors.full_messages }, 422)
+        end
+      end
+
+      # POST /api/v1/vehicles/:id/relocate
+      # Reubica un vehículo a otro nodo
+      desc "Reubica un vehículo a otro nodo organizacional" do
+        success Entities::VehicleEntity
+        failure [ [ 404, "No encontrado" ], [ 422, "Error de validación" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del vehículo"
+        requires :new_node_id, type: Integer, desc: "ID del nuevo nodo"
+        optional :reason, type: String, desc: "Razón de la reubicación"
+      end
+      post ":id/relocate" do
+        vehicle = Vehicle.kept.find(params[:id])
+
+        service = Vehicles::Relocator.new(
+          vehicle,
+          params[:new_node_id],
+          reason: params[:reason]
+        )
+
+        if service.call
+          response_data = {
+            vehicle: service.vehicle,
+            relocation_info: service.relocation_info
+          }
+          present service.vehicle,
+                  with: Entities::VehicleEntity,
+                  include_location: true
+        else
+          error_response_from_service(service)
+        end
+      end
+
+      # DELETE /api/v1/vehicles/:id
+      # Elimina un vehículo
+      desc "Elimina un vehículo" do
+        success code: 200, message: "Vehículo eliminado"
+        failure [ [ 404, "No encontrado" ] ]
+      end
+      params do
+        requires :id, type: Integer, desc: "ID del vehículo"
+      end
+      delete ":id" do
+        vehicle = Vehicle.kept.find(params[:id])
+
+        if vehicle.discard
+          success_response(nil, "Vehículo eliminado exitosamente")
+        else
+          error!({ error: "Error al eliminar el vehículo" }, 422)
+        end
+      end
+    end
+  end
+end

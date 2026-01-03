@@ -1,0 +1,1519 @@
+# app/services/organizational_levels/creator.rb
+module OrganizationalLevels
+  class Creator
+    # Inicializa el servicio con los parámetros necesarios
+    # @param params [Hash] Atributos del nivel organizacional
+    # @return [Creator]
+    def initialize(params)
+      @params = params
+      @level = nil
+      @errors = []
+    end
+
+    # Ejecuta la creación del nivel organizacional
+    # @return [Boolean] true si fue exitoso, false si hubo errores
+    def call
+      validate_params
+      return false if @errors.any?
+
+      create_level
+      @errors.empty?
+    end
+
+    # Retorna el nivel creado
+    # @return [OrganizationalLevel, nil]
+    attr_reader :level
+
+    # Retorna los errores acumulados
+    # @return [Array<String>]
+    attr_reader :errors
+
+    # Verifica si el servicio fue exitoso
+    # @return [Boolean]
+    def success?
+      @errors.empty? && @level.present? && @level.persisted?
+    end
+
+    private
+
+    # Valida los parámetros antes de crear
+    def validate_params
+      if @params[:name].blank?
+        @errors << "El nombre es obligatorio"
+      end
+
+      if @params[:level_order].blank?
+        @errors << "El orden del nivel es obligatorio"
+      elsif !@params[:level_order].is_a?(Integer) || @params[:level_order] < 1
+        @errors << "El orden del nivel debe ser un número entero positivo"
+      end
+
+      # Validar que no exista otro nivel con el mismo orden
+      if @params[:level_order].present?
+        if OrganizationalLevel.exists?(level_order: @params[:level_order])
+          @errors << "Ya existe un nivel con el orden #{@params[:level_order]}"
+        end
+      end
+    end
+
+    # Crea el nivel organizacional
+    def create_level
+      @level = OrganizationalLevel.new(
+        name: @params[:name],
+        description: @params[:description],
+        level_order: @params[:level_order]
+      )
+
+      unless @level.save
+        @errors.concat(@level.errors.full_messages)
+      end
+    rescue ActiveRecord::RecordInvalid => e
+      @errors << e.message
+    rescue StandardError => e
+      @errors << "Error al crear el nivel: #{e.message}"
+    end
+  end
+end
+
+# app/services/organizational_levels/destroyer.rb
+module OrganizationalLevels
+  class Destroyer
+    # Inicializa el servicio con el nivel a eliminar
+    # @param level [OrganizationalLevel]
+    def initialize(level)
+      @level = level
+      @errors = []
+    end
+
+    # Ejecuta el soft delete del nivel
+    # @return [Boolean]
+    def call
+      validate_level
+      return false if @errors.any?
+
+      validate_can_delete
+      return false if @errors.any?
+
+      soft_delete_level
+      @errors.empty?
+    end
+
+    attr_reader :level, :errors
+
+    def success?
+      @errors.empty?
+    end
+
+    private
+
+    # Valida que el nivel exista
+    def validate_level
+      if @level.nil?
+        @errors << "Nivel no encontrado"
+      elsif @level.discarded?
+        @errors << "El nivel ya está eliminado"
+      end
+    end
+
+    # REGLA DE NEGOCIO: No se puede eliminar un nivel que tenga nodos asociados
+    # Esto protege la integridad referencial y evita datos huérfanos
+    def validate_can_delete
+      if @level.has_nodes?
+        active_nodes_count = @level.organizational_nodes.count
+        @errors << "No se puede eliminar el nivel porque tiene #{active_nodes_count} nodo(s) asociado(s)"
+      end
+    end
+
+    # Realiza el soft delete
+    def soft_delete_level
+      @level.discard
+    rescue StandardError => e
+      @errors << "Error al eliminar el nivel: #{e.message}"
+    end
+  end
+end
+
+# app/services/organizational_levels/updater.rb
+module OrganizationalLevels
+  class Updater
+    # Inicializa el servicio con el nivel y los nuevos parámetros
+    # @param level [OrganizationalLevel] Nivel a actualizar
+    # @param params [Hash] Nuevos atributos
+    def initialize(level, params)
+      @level = level
+      @params = params
+      @errors = []
+    end
+
+    # Ejecuta la actualización
+    # @return [Boolean]
+    def call
+      validate_level
+      return false if @errors.any?
+
+      validate_params
+      return false if @errors.any?
+
+      update_level
+      @errors.empty?
+    end
+
+    attr_reader :level, :errors
+
+    def success?
+      @errors.empty?
+    end
+
+    private
+
+    # Valida que el nivel exista y esté activo
+    def validate_level
+      if @level.nil?
+        @errors << "Nivel no encontrado"
+      elsif @level.discarded?
+        @errors << "No se puede actualizar un nivel eliminado"
+      end
+    end
+
+    # Valida los parámetros de actualización
+    def validate_params
+      if @params[:name].present? && @params[:name].blank?
+        @errors << "El nombre no puede estar vacío"
+      end
+
+      # Si se cambia el order, validar que no exista otro nivel con ese orden
+      if @params[:level_order].present? && @params[:level_order] != @level.level_order
+        if OrganizationalLevel.where.not(id: @level.id).exists?(level_order: @params[:level_order])
+          @errors << "Ya existe otro nivel con el orden #{@params[:level_order]}"
+        end
+      end
+
+      # IMPORTANTE: Si se cambia el order de un nivel, verificar impacto en la jerarquía
+      if @params[:level_order].present? && @params[:level_order] != @level.level_order
+        if @level.has_nodes?
+          @errors << "No se puede cambiar el orden de un nivel que tiene nodos asignados"
+        end
+      end
+    end
+
+    # Actualiza el nivel
+    def update_level
+      update_params = {}
+      update_params[:name] = @params[:name] if @params[:name].present?
+      update_params[:description] = @params[:description] if @params.key?(:description)
+      update_params[:level_order] = @params[:level_order] if @params[:level_order].present?
+
+      unless @level.update(update_params)
+        @errors.concat(@level.errors.full_messages)
+      end
+    rescue StandardError => e
+      @errors << "Error al actualizar el nivel: #{e.message}"
+    end
+  end
+end
+
+# app/services/organizational_nodes/creator.rb
+module OrganizationalNodes
+  class Creator
+    # Crea un nuevo nodo organizacional en la jerarquía
+    # @param params [Hash] Atributos del nodo
+    #   - :name [String] Nombre del nodo (obligatorio)
+    #   - :organizational_level_id [Integer] ID del nivel (obligatorio)
+    #   - :parent_id [Integer] ID del nodo padre (opcional para nivel 1)
+    #   - :code [String] Código único del nodo (opcional)
+    #   - :description [String] Descripción del nodo (opcional)
+    def initialize(params)
+      @params = params
+      @node = nil
+      @errors = []
+    end
+
+    def call
+      validate_params
+      return false if @errors.any?
+
+      validate_hierarchy
+      return false if @errors.any?
+
+      create_node
+      @errors.empty?
+    end
+
+    attr_reader :node, :errors
+
+    def success?
+      @errors.empty? && @node.present? && @node.persisted?
+    end
+
+    private
+
+    # Validaciones básicas de parámetros
+    def validate_params
+      if @params[:name].blank?
+        @errors << "El nombre es obligatorio"
+      end
+
+      if @params[:organizational_level_id].blank?
+        @errors << "El nivel organizacional es obligatorio"
+      end
+
+      # Validar que el nivel exista
+      @level = OrganizationalLevel.find_by(id: @params[:organizational_level_id])
+      if @level.nil?
+        @errors << "El nivel organizacional no existe"
+      elsif @level.discarded?
+        @errors << "El nivel organizacional está eliminado"
+      end
+    end
+
+    # VALIDACIÓN CRÍTICA: Valida la jerarquía correcta
+    def validate_hierarchy
+      return if @level.nil? # Ya validado en validate_params
+
+      # Si es el primer nivel, NO debe tener padre
+      if @level.first_level?
+        if @params[:parent_id].present?
+          @errors << "Los nodos del primer nivel no pueden tener padre"
+        end
+      else
+        # Si NO es el primer nivel, DEBE tener padre
+        if @params[:parent_id].blank?
+          @errors << "Los nodos de este nivel deben tener un nodo padre"
+          return
+        end
+
+        # Validar que el padre exista y esté activo
+        @parent = OrganizationalNode.find_by(id: @params[:parent_id])
+        if @parent.nil?
+          @errors << "El nodo padre no existe"
+          return
+        elsif @parent.discarded?
+          @errors << "El nodo padre está eliminado"
+          return
+        end
+
+        # REGLA DE NEGOCIO: El padre debe ser del nivel inmediatamente anterior
+        expected_parent_level_order = @level.level_order - 1
+        parent_level_order = @parent.organizational_level.level_order
+
+        if parent_level_order != expected_parent_level_order
+          @errors << "El nodo padre debe pertenecer al nivel #{expected_parent_level_order}"
+        end
+      end
+    end
+
+    # Crea el nodo
+    def create_node
+      @node = OrganizationalNode.new(
+        name: @params[:name],
+        description: @params[:description],
+        code: @params[:code],
+        organizational_level_id: @params[:organizational_level_id],
+        parent_id: @params[:parent_id]
+      )
+
+      unless @node.save
+        @errors.concat(@node.errors.full_messages)
+      end
+    rescue ActiveRecord::RecordInvalid => e
+      @errors << e.message
+    rescue StandardError => e
+      @errors << "Error al crear el nodo: #{e.message}"
+    end
+  end
+end
+
+# app/services/organizational_nodes/destroyer.rb
+module OrganizationalNodes
+  class Destroyer
+    # Elimina (soft delete) un nodo organizacional
+    # @param node [OrganizationalNode]
+    # @param strategy [Symbol] Estrategia de eliminación: :restrict, :cascade
+    def initialize(node, strategy: :restrict)
+      @node = node
+      @strategy = strategy
+      @errors = []
+      @deleted_count = 0
+    end
+
+    def call
+      validate_node
+      return false if @errors.any?
+
+      validate_can_delete
+      return false if @errors.any?
+
+      case @strategy
+      when :restrict
+        soft_delete_node_restricted
+      when :cascade
+        soft_delete_node_cascade
+      else
+        @errors << "Estrategia de eliminación no válida"
+        return false
+      end
+
+      @errors.empty?
+    end
+
+    attr_reader :node, :errors, :deleted_count
+
+    def success?
+      @errors.empty?
+    end
+
+    private
+
+    def validate_node
+      if @node.nil?
+        @errors << "Nodo no encontrado"
+      elsif @node.discarded?
+        @errors << "El nodo ya está eliminado"
+      end
+    end
+
+    # ESTRATEGIA RESTRICT (por defecto):
+    # Solo permite eliminar si NO tiene:
+    # - Vehículos asignados
+    # - Nodos hijos
+    def validate_can_delete
+      return unless @strategy == :restrict
+
+      if @node.vehicles.exists?
+        vehicles_count = @node.vehicles.count
+        @errors << "No se puede eliminar el nodo porque tiene #{vehicles_count} vehículo(s) asignado(s)"
+      end
+
+      if @node.children.exists?
+        children_count = @node.children.count
+        @errors << "No se puede eliminar el nodo porque tiene #{children_count} nodo(s) hijo(s)"
+      end
+    end
+
+    # Elimina solo el nodo (estrategia RESTRICT)
+    def soft_delete_node_restricted
+      @node.discard
+      @deleted_count = 1
+    rescue StandardError => e
+      @errors << "Error al eliminar el nodo: #{e.message}"
+    end
+
+    # Elimina el nodo y TODA su rama descendiente (estrategia CASCADE)
+    # CUIDADO: Esta es una operación peligrosa
+    def soft_delete_node_cascade
+      ActiveRecord::Base.transaction do
+        # Obtener todos los nodos de la rama (incluyendo el nodo raíz)
+        nodes_to_delete = @node.self_and_descendants
+
+        # Verificar que ningún nodo tenga vehículos
+        vehicle_counts = Vehicle.where(
+          organizational_node_id: nodes_to_delete.pluck(:id)
+        ).group(:organizational_node_id).count
+
+        if vehicle_counts.any?
+          total_vehicles = vehicle_counts.values.sum
+          @errors << "No se puede eliminar la rama porque tiene #{total_vehicles} vehículo(s) asignado(s)"
+          raise ActiveRecord::Rollback
+        end
+
+        # Eliminar todos los accesos de usuario asociados a estos nodos
+        NodeUserAccess.where(
+          organizational_node_id: nodes_to_delete.pluck(:id)
+        ).discard_all
+
+        # Eliminar todos los nodos de la rama
+        nodes_to_delete.each(&:discard)
+        @deleted_count = nodes_to_delete.count
+
+      rescue StandardError => e
+        @errors << "Error al eliminar la rama: #{e.message}"
+        raise ActiveRecord::Rollback
+      end
+    end
+  end
+end
+
+# app/services/organizational_nodes/tree_builder.rb
+module OrganizationalNodes
+  class TreeBuilder
+    # Construye una representación en árbol de la jerarquía organizacional
+    # @param root_node [OrganizationalNode, nil] Nodo raíz (si nil, construye el árbol completo)
+    # @param options [Hash] Opciones de construcción
+    #   - :include_vehicles [Boolean] Incluir vehículos en cada nodo (default: false)
+    #   - :include_counts [Boolean] Incluir contadores (vehículos, hijos) (default: true)
+    #   - :max_depth [Integer] Profundidad máxima del árbol (default: nil = sin límite)
+    #   - :user [User] Usuario para filtrar por visibilidad (default: nil = todos)
+    def initialize(root_node = nil, options = {})
+      @root_node = root_node
+      @options = default_options.merge(options)
+      @tree = []
+      @errors = []
+    end
+
+    def call
+      validate_options
+      return [] if @errors.any?
+
+      build_tree
+      @tree
+    end
+
+    attr_reader :tree, :errors
+
+    def success?
+      @errors.empty?
+    end
+
+    private
+
+    def default_options
+      {
+        include_vehicles: false,
+        include_counts: true,
+        max_depth: nil,
+        user: nil
+      }
+    end
+
+    def validate_options
+      if @root_node.present? && @root_node.discarded?
+        @errors << "El nodo raíz está eliminado"
+      end
+
+      if @options[:max_depth].present? && @options[:max_depth] < 0
+        @errors << "La profundidad máxima debe ser mayor o igual a 0"
+      end
+    end
+
+    # Construye el árbol jerárquico
+    def build_tree
+      if @root_node.present?
+        # Construir árbol desde un nodo específico
+        @tree = build_node_tree(@root_node, 0)
+      else
+        # Construir árbol completo desde todos los nodos raíz
+        roots = base_relation.where(ancestry: nil).order(:name)
+        @tree = roots.map { |root| build_node_tree(root, 0) }
+      end
+    end
+
+    # Construye recursivamente el árbol para un nodo
+    # @param node [OrganizationalNode] Nodo actual
+    # @param current_depth [Integer] Profundidad actual
+    # @return [Hash] Representación del nodo con sus hijos
+    def build_node_tree(node, current_depth)
+      node_data = {
+        id: node.id,
+        name: node.name,
+        code: node.code,
+        description: node.description,
+        level: {
+          id: node.organizational_level.id,
+          name: node.organizational_level.name,
+          order: node.organizational_level.level_order
+        },
+        depth: current_depth,
+        is_root: node.root_node?,
+        is_leaf: node.leaf_node?,
+        children: []
+      }
+
+      # Agregar contadores si está habilitado
+      if @options[:include_counts]
+        node_data[:counts] = {
+          direct_vehicles: node.vehicles_count,
+          total_vehicles: node.total_vehicles_count,
+          direct_children: node.children_count,
+          total_descendants: node.descendants_count
+        }
+      end
+
+      # Agregar vehículos si está habilitado
+      if @options[:include_vehicles]
+        node_data[:vehicles] = node.vehicles.map do |vehicle|
+          {
+            id: vehicle.id,
+            plate: vehicle.plate,
+            brand: vehicle.brand,
+            model: vehicle.model,
+            year: vehicle.year
+          }
+        end
+      end
+
+      # Construir hijos recursivamente si no hemos alcanzado la profundidad máxima
+      if @options[:max_depth].nil? || current_depth < @options[:max_depth]
+        # Ancestry usa children, no parent_id
+        children = node.children.kept.order(:name)
+
+        # Aplicar filtro de usuario si existe
+        if @options[:user].present?
+          accessible_node_ids = @options[:user].visible_nodes.pluck(:id)
+          children = children.where(id: accessible_node_ids)
+        end
+
+        node_data[:children] = children.map do |child|
+          build_node_tree(child, current_depth + 1)
+        end
+      end
+
+      node_data
+    end
+
+    # Obtiene la relación base de nodos según las opciones
+    def base_relation
+      relation = OrganizationalNode.kept.includes(:organizational_level)
+
+      # Filtrar por visibilidad si se especifica un usuario
+      if @options[:user].present?
+        accessible_node_ids = @options[:user].visible_nodes.pluck(:id)
+        relation = relation.where(id: accessible_node_ids)
+      end
+
+      relation
+    end
+
+    # Método público adicional: Construir árbol en formato flat (para UI)
+    # Retorna un array plano con información de indentación
+    def self.build_flat_tree(root_node = nil, options = {})
+      builder = new(root_node, options)
+      tree = builder.call
+      flatten_tree(tree)
+    end
+
+    # Convierte el árbol anidado en un array plano
+    def self.flatten_tree(tree, level = 0, result = [])
+      tree = [ tree ] unless tree.is_a?(Array)
+
+      tree.each do |node|
+        result << {
+          **node.except(:children),
+          indent_level: level
+        }
+
+        flatten_tree(node[:children], level + 1, result) if node[:children].any?
+      end
+
+      result
+    end
+  end
+end
+
+# app/services/organizational_nodes/updater.rb
+module OrganizationalNodes
+  class Updater
+    # Actualiza un nodo organizacional
+    # Puede actualizar atributos básicos Y mover el nodo a otro padre
+    # @param node [OrganizationalNode] Nodo a actualizar
+    # @param params [Hash] Nuevos atributos
+    def initialize(node, params)
+      @node = node
+      @params = params
+      @errors = []
+      @parent_changed = false
+    end
+
+    def call
+      validate_node
+      return false if @errors.any?
+
+      validate_params
+      return false if @errors.any?
+
+      # Si se cambia el padre, validar la nueva jerarquía
+      if parent_will_change?
+        @parent_changed = true
+        validate_new_hierarchy
+        return false if @errors.any?
+      end
+
+      update_node
+      @errors.empty?
+    end
+
+    attr_reader :node, :errors
+
+    def success?
+      @errors.empty?
+    end
+
+    # Indica si el nodo fue movido a otro padre
+    def parent_moved?
+      @parent_changed
+    end
+
+    private
+
+    def validate_node
+      if @node.nil?
+        @errors << "Nodo no encontrado"
+      elsif @node.discarded?
+        @errors << "No se puede actualizar un nodo eliminado"
+      end
+    end
+
+    def validate_params
+      if @params[:name].present? && @params[:name].blank?
+        @errors << "El nombre no puede estar vacío"
+      end
+
+      # Validar código único si se proporciona
+      if @params[:code].present? && @params[:code] != @node.code
+        if OrganizationalNode.where.not(id: @node.id).exists?(code: @params[:code])
+          @errors << "El código ya está en uso"
+        end
+      end
+    end
+
+    # Verifica si el parent_id cambiará
+    def parent_will_change?
+      @params.key?(:parent_id) && @params[:parent_id] != @node.parent_id
+    end
+
+    # VALIDACIÓN CRÍTICA: Valida que el movimiento del nodo sea válido
+    def validate_new_hierarchy
+      new_parent_id = @params[:parent_id]
+
+      # Si el nuevo padre es nil, debe ser un nodo del primer nivel
+      if new_parent_id.nil?
+        unless @node.organizational_level.first_level?
+          @errors << "Solo los nodos del primer nivel pueden no tener padre"
+        end
+        return
+      end
+
+      # Validar que el nuevo padre exista
+      @new_parent = OrganizationalNode.find_by(id: new_parent_id)
+      if @new_parent.nil?
+        @errors << "El nuevo nodo padre no existe"
+        return
+      elsif @new_parent.discarded?
+        @errors << "El nuevo nodo padre está eliminado"
+        return
+      end
+
+      # REGLA: No se puede mover un nodo para ser hijo de sí mismo
+      if @new_parent.id == @node.id
+        @errors << "Un nodo no puede ser padre de sí mismo"
+        return
+      end
+
+      # REGLA CRÍTICA: No se puede mover un nodo para ser hijo de uno de sus descendientes
+      # Esto crearía un ciclo en el árbol
+      if @new_parent.descendant_of?(@node)
+        @errors << "No se puede mover un nodo a uno de sus descendientes (crearía un ciclo)"
+        return
+      end
+
+      # REGLA: El nuevo padre debe ser del nivel inmediatamente anterior
+      expected_parent_level_order = @node.organizational_level.level_order - 1
+      new_parent_level_order = @new_parent.organizational_level.level_order
+
+      if new_parent_level_order != expected_parent_level_order
+        @errors << "El nuevo padre debe pertenecer al nivel #{expected_parent_level_order}"
+      end
+    end
+
+    # Actualiza el nodo
+    def update_node
+      update_params = {}
+
+      update_params[:name] = @params[:name] if @params[:name].present?
+      update_params[:description] = @params[:description] if @params.key?(:description)
+      update_params[:code] = @params[:code] if @params.key?(:code)
+
+      # IMPORTANTE: Cambiar el parent_id mueve todo el subárbol
+      # Ancestry maneja automáticamente la actualización de todos los descendientes
+      update_params[:parent_id] = @params[:parent_id] if @params.key?(:parent_id)
+
+      unless @node.update(update_params)
+        @errors.concat(@node.errors.full_messages)
+      end
+    rescue StandardError => e
+      @errors << "Error al actualizar el nodo: #{e.message}"
+    end
+  end
+end
+
+# app/services/user_access/access_manager.rb
+module UserAccess
+  class AccessManager
+    # Gestiona la asignación y revocación de accesos de usuarios a nodos
+    # Este servicio es CRÍTICO para la seguridad y visibilidad del sistema
+    #
+    # @param user [User] Usuario al que se le gestiona el acceso
+    def initialize(user)
+      @user = user
+      @errors = []
+      @granted_accesses = []
+      @revoked_accesses = []
+    end
+
+    # Otorga acceso a un nodo
+    # @param node_id [Integer] ID del nodo
+    # @param granted_by [User] Usuario que otorga el acceso (para auditoría)
+    # @return [Boolean]
+    def grant_access(node_id, granted_by: nil)
+      @errors = []
+
+      validate_user
+      return false if @errors.any?
+
+      validate_node(node_id)
+      return false if @errors.any?
+
+      check_existing_access(node_id)
+      return false if @errors.any?
+
+      create_access(node_id, granted_by)
+      @errors.empty?
+    end
+
+    # Revoca acceso a un nodo
+    # @param node_id [Integer] ID del nodo
+    # @return [Boolean]
+    def revoke_access(node_id)
+      @errors = []
+
+      validate_user
+      return false if @errors.any?
+
+      find_and_revoke_access(node_id)
+      @errors.empty?
+    end
+
+    # Otorga acceso a múltiples nodos en batch
+    # @param node_ids [Array<Integer>] IDs de los nodos
+    # @param granted_by [User] Usuario que otorga el acceso
+    # @return [Boolean]
+    def grant_multiple_accesses(node_ids, granted_by: nil)
+      @errors = []
+      @granted_accesses = []
+
+      validate_user
+      return false if @errors.any?
+
+      if node_ids.blank? || !node_ids.is_a?(Array)
+        @errors << "Debe proporcionar un array de IDs de nodos"
+        return false
+      end
+
+      ActiveRecord::Base.transaction do
+        node_ids.each do |node_id|
+          result = grant_access(node_id, granted_by: granted_by)
+
+          unless result
+            # Si alguno falla, hacemos rollback de todos
+            raise ActiveRecord::Rollback
+          end
+        end
+      end
+
+      @errors.empty?
+    rescue StandardError => e
+      @errors << "Error al otorgar accesos múltiples: #{e.message}"
+      false
+    end
+
+    # Revoca acceso a múltiples nodos en batch
+    # @param node_ids [Array<Integer>] IDs de los nodos
+    # @return [Boolean]
+    def revoke_multiple_accesses(node_ids)
+      @errors = []
+      @revoked_accesses = []
+
+      validate_user
+      return false if @errors.any?
+
+      if node_ids.blank? || !node_ids.is_a?(Array)
+        @errors << "Debe proporcionar un array de IDs de nodos"
+        return false
+      end
+
+      ActiveRecord::Base.transaction do
+        node_ids.each do |node_id|
+          result = revoke_access(node_id)
+
+          unless result
+            raise ActiveRecord::Rollback
+          end
+        end
+      end
+
+      @errors.empty?
+    rescue StandardError => e
+      @errors << "Error al revocar accesos múltiples: #{e.message}"
+      false
+    end
+
+    # Reemplaza TODOS los accesos del usuario con una nueva lista
+    # CUIDADO: Esta operación elimina todos los accesos existentes
+    # @param node_ids [Array<Integer>] Nueva lista de IDs de nodos
+    # @param granted_by [User] Usuario que realiza el cambio
+    # @return [Boolean]
+    def replace_all_accesses(node_ids, granted_by: nil)
+      @errors = []
+      @granted_accesses = []
+      @revoked_accesses = []
+
+      validate_user
+      return false if @errors.any?
+
+      ActiveRecord::Base.transaction do
+        # 1. Revocar todos los accesos existentes
+        current_accesses = @user.node_user_accesses
+        current_accesses.each do |access|
+          access.discard
+          @revoked_accesses << access
+        end
+
+        # 2. Crear los nuevos accesos
+        node_ids.each do |node_id|
+          result = grant_access(node_id, granted_by: granted_by)
+
+          unless result
+            raise ActiveRecord::Rollback
+          end
+        end
+      end
+
+      @errors.empty?
+    rescue StandardError => e
+      @errors << "Error al reemplazar accesos: #{e.message}"
+      false
+    end
+
+    # Retorna información sobre los accesos otorgados en esta operación
+    def granted_accesses_info
+      @granted_accesses.map do |access|
+        {
+          access_id: access.id,
+          node_id: access.organizational_node_id,
+          node_name: access.organizational_node.name,
+          granted_at: access.granted_at
+        }
+      end
+    end
+
+    # Retorna información sobre los accesos revocados en esta operación
+    def revoked_accesses_info
+      @revoked_accesses.map do |access|
+        {
+          access_id: access.id,
+          node_id: access.organizational_node_id,
+          node_name: access.organizational_node.name,
+          revoked_at: Time.current
+        }
+      end
+    end
+
+    attr_reader :errors, :granted_accesses, :revoked_accesses
+
+    def success?
+      @errors.empty?
+    end
+
+    private
+
+    def validate_user
+      if @user.nil?
+        @errors << "Usuario no encontrado"
+      elsif @user.discarded?
+        @errors << "Usuario eliminado"
+      end
+    end
+
+    def validate_node(node_id)
+      @node = OrganizationalNode.find_by(id: node_id)
+
+      if @node.nil?
+        @errors << "Nodo organizacional no encontrado"
+      elsif @node.discarded?
+        @errors << "Nodo organizacional eliminado"
+      end
+    end
+
+    # VALIDACIÓN CRÍTICA: Verifica si ya existe un acceso
+    # También verifica accesos redundantes (si el usuario ya tiene acceso a un ancestro)
+    def check_existing_access(node_id)
+      # Verificar si ya tiene acceso directo a este nodo
+      if @user.node_user_accesses.exists?(organizational_node_id: node_id)
+        @errors << "El usuario ya tiene acceso a este nodo"
+        return
+      end
+
+      # VALIDACIÓN ANTI-REDUNDANCIA:
+      # Verificar si el usuario ya tiene acceso a un nodo ancestro
+      # Si tiene acceso a "España", no necesita acceso a "Madrid"
+      user_node_ids = @user.accessible_nodes.pluck(:id)
+      node_ancestor_ids = @node.ancestor_ids
+
+      if (user_node_ids & node_ancestor_ids).any?
+        ancestor_names = OrganizationalNode.where(id: user_node_ids & node_ancestor_ids).pluck(:name)
+        @errors << "El usuario ya tiene acceso a un nodo superior (#{ancestor_names.join(', ')}) que incluye este nodo"
+        return
+      end
+
+      # Verificar si el usuario tiene accesos a descendientes
+      # Si otorgamos acceso a "España", los accesos a "Madrid" y "Barcelona" serían redundantes
+      node_descendant_ids = @node.descendant_ids
+      redundant_descendants = user_node_ids & node_descendant_ids
+
+      if redundant_descendants.any?
+        descendant_names = OrganizationalNode.where(id: redundant_descendants).pluck(:name)
+        @errors << "Este acceso haría redundantes los accesos existentes a: #{descendant_names.join(', ')}"
+      end
+    end
+
+    def create_access(node_id, granted_by)
+      access = NodeUserAccess.new(
+        user: @user,
+        organizational_node_id: node_id,
+        granted_by: granted_by,
+        granted_at: Time.current
+      )
+
+      if access.save
+        @granted_accesses << access
+      else
+        @errors.concat(access.errors.full_messages)
+      end
+    rescue StandardError => e
+      @errors << "Error al crear el acceso: #{e.message}"
+    end
+
+    def find_and_revoke_access(node_id)
+      access = @user.node_user_accesses.find_by(organizational_node_id: node_id)
+
+      if access.nil?
+        @errors << "El usuario no tiene acceso a este nodo"
+        return
+      end
+
+      if access.discard
+        @revoked_accesses << access
+      else
+        @errors << "Error al revocar el acceso"
+      end
+    rescue StandardError => e
+      @errors << "Error al revocar el acceso: #{e.message}"
+    end
+  end
+end
+
+# app/services/user_access/visibility_calculator.rb
+module UserAccess
+  class VisibilityCalculator
+    # Calcula la visibilidad completa de un usuario
+    # Este servicio es fundamental para determinar qué puede ver cada usuario
+    # basándose en la herencia jerárquica de nodos
+    #
+    # @param user [User] Usuario para calcular visibilidad
+    def initialize(user)
+      @user = user
+      @errors = []
+      @calculation_result = nil
+    end
+
+    # Calcula la visibilidad completa
+    # @return [Hash] Resultado del cálculo
+    def call
+      validate_user
+      return nil if @errors.any?
+
+      calculate_visibility
+      @calculation_result
+    end
+
+    # Verifica si el usuario puede ver un nodo específico
+    # @param node [OrganizationalNode]
+    # @return [Boolean]
+    def can_see_node?(node)
+      return false if node.nil? || @user.nil?
+
+      # Obtener nodos accesibles del usuario
+      accessible_node_ids = @user.accessible_nodes.pluck(:id)
+
+      # El usuario puede ver el nodo si:
+      # 1. Tiene acceso directo al nodo
+      # 2. Tiene acceso a algún ancestro del nodo
+      node_and_ancestor_ids = node.self_and_ancestors.pluck(:id)
+      (accessible_node_ids & node_and_ancestor_ids).any?
+    end
+
+    # Verifica si el usuario puede ver un vehículo
+    # @param vehicle [Vehicle]
+    # @return [Boolean]
+    def can_see_vehicle?(vehicle)
+      return false if vehicle.nil? || @user.nil?
+      can_see_node?(vehicle.organizational_node)
+    end
+
+    # Calcula el alcance de visibilidad (scope breadth)
+    # Retorna métricas sobre cuánto puede ver el usuario
+    def visibility_scope
+      calculate_visibility unless @calculation_result
+
+      {
+        direct_nodes: @calculation_result[:direct_nodes_count],
+        visible_nodes: @calculation_result[:visible_nodes_count],
+        visible_vehicles: @calculation_result[:visible_vehicles_count],
+        coverage_percentage: calculate_coverage_percentage,
+        levels_coverage: calculate_levels_coverage
+      }
+    end
+
+    # Obtiene los nodos visibles organizados por nivel
+    # @return [Hash] { level_name => [nodes] }
+    def visible_nodes_by_level
+      calculate_visibility unless @calculation_result
+
+      visible_nodes = @calculation_result[:visible_nodes]
+      visible_nodes.group_by { |node| node.organizational_level.name }
+    end
+
+    # Obtiene estadísticas de vehículos visibles
+    def visible_vehicles_statistics
+      calculate_visibility unless @calculation_result
+
+      visible_vehicles = @calculation_result[:visible_vehicles]
+
+      {
+        total: visible_vehicles.count,
+        by_brand: visible_vehicles.group_by(&:brand).transform_values(&:count),
+        by_year: visible_vehicles.group_by(&:year).transform_values(&:count),
+        by_node: visible_vehicles.group_by { |v| v.organizational_node.name }.transform_values(&:count),
+        average_age: calculate_average_vehicle_age(visible_vehicles)
+      }
+    end
+
+    # Detecta posibles problemas de visibilidad
+    # @return [Array<Hash>] Lista de problemas detectados
+    def detect_visibility_issues
+      issues = []
+
+      calculate_visibility unless @calculation_result
+
+      # Issue 1: Usuario sin accesos
+      if @calculation_result[:direct_nodes_count] == 0
+        issues << {
+          type: :no_access,
+          severity: :high,
+          message: "El usuario no tiene ningún acceso asignado"
+        }
+      end
+
+      # Issue 2: Usuario con acceso pero sin vehículos visibles
+      if @calculation_result[:direct_nodes_count] > 0 && @calculation_result[:visible_vehicles_count] == 0
+        issues << {
+          type: :no_vehicles,
+          severity: :medium,
+          message: "El usuario tiene accesos pero no hay vehículos en los nodos asignados"
+        }
+      end
+
+      # Issue 3: Detectar accesos potencialmente redundantes
+      redundant = detect_redundant_accesses
+      if redundant.any?
+        issues << {
+          type: :redundant_access,
+          severity: :low,
+          message: "Se detectaron #{redundant.count} acceso(s) potencialmente redundante(s)",
+          details: redundant
+        }
+      end
+
+      issues
+    end
+
+    # Compara visibilidad con otro usuario
+    # Útil para auditoría y análisis
+    # @param other_user [User]
+    # @return [Hash]
+    def compare_with(other_user)
+      my_visibility = calculate_visibility
+      other_calculator = self.class.new(other_user)
+      other_visibility = other_calculator.calculate_visibility
+
+      {
+        user1: {
+          name: @user.full_name,
+          nodes: my_visibility[:visible_nodes_count],
+          vehicles: my_visibility[:visible_vehicles_count]
+        },
+        user2: {
+          name: other_user.full_name,
+          nodes: other_visibility[:visible_nodes_count],
+          vehicles: other_visibility[:visible_vehicles_count]
+        },
+        shared_nodes: calculate_shared_nodes(my_visibility[:visible_nodes], other_visibility[:visible_nodes]),
+        shared_vehicles: calculate_shared_vehicles(my_visibility[:visible_vehicles], other_visibility[:visible_vehicles])
+      }
+    end
+
+    attr_reader :errors
+
+    def success?
+      @errors.empty?
+    end
+
+    private
+
+    def validate_user
+      if @user.nil?
+        @errors << "Usuario no encontrado"
+      elsif @user.discarded?
+        @errors << "Usuario eliminado"
+      end
+    end
+
+    # MÉTODO PRINCIPAL: Calcula toda la visibilidad del usuario
+    def calculate_visibility
+      # 1. Obtener nodos con acceso directo
+      direct_nodes = @user.accessible_nodes.to_a
+
+      # 2. Expandir a todos los nodos visibles (con descendientes)
+      visible_node_ids = direct_nodes.flat_map do |node|
+        node.self_and_descendants.pluck(:id)
+      end.uniq
+
+      visible_nodes = OrganizationalNode.where(id: visible_node_ids).includes(:organizational_level)
+
+      # 3. Obtener todos los vehículos en esos nodos
+      visible_vehicles = Vehicle.where(organizational_node_id: visible_node_ids).includes(:organizational_node)
+
+      @calculation_result = {
+        direct_nodes: direct_nodes,
+        direct_nodes_count: direct_nodes.count,
+        visible_nodes: visible_nodes.to_a,
+        visible_nodes_count: visible_nodes.count,
+        visible_vehicles: visible_vehicles.to_a,
+        visible_vehicles_count: visible_vehicles.count,
+        calculated_at: Time.current
+      }
+    end
+
+    # Calcula el porcentaje de cobertura respecto al total del sistema
+    def calculate_coverage_percentage
+      total_nodes = OrganizationalNode.count
+      return 0 if total_nodes == 0
+
+      visible_count = @calculation_result[:visible_nodes_count]
+      ((visible_count.to_f / total_nodes) * 100).round(2)
+    end
+
+    # Calcula la cobertura por nivel
+    def calculate_levels_coverage
+      visible_nodes = @calculation_result[:visible_nodes]
+
+      OrganizationalLevel.ordered.map do |level|
+        total_in_level = level.organizational_nodes.count
+        visible_in_level = visible_nodes.count { |n| n.organizational_level_id == level.id }
+
+        {
+          level_name: level.name,
+          level_order: level.level_order,
+          total_nodes: total_in_level,
+          visible_nodes: visible_in_level,
+          percentage: total_in_level > 0 ? ((visible_in_level.to_f / total_in_level) * 100).round(2) : 0
+        }
+      end
+    end
+
+    # Detecta accesos redundantes
+    def detect_redundant_accesses
+      redundant = []
+      direct_nodes = @calculation_result[:direct_nodes]
+
+      direct_nodes.each do |node|
+        # Verificar si algún otro acceso directo es ancestro de este nodo
+        other_nodes = direct_nodes - [ node ]
+
+        other_nodes.each do |other_node|
+          if node.descendant_of?(other_node)
+            redundant << {
+              node_id: node.id,
+              node_name: node.name,
+              made_redundant_by: {
+                node_id: other_node.id,
+                node_name: other_node.name
+              }
+            }
+          end
+        end
+      end
+
+      redundant
+    end
+
+    def calculate_average_vehicle_age(vehicles)
+      current_year = Date.current.year
+      years = vehicles.map(&:year).compact
+
+      return 0 if years.empty?
+
+      ages = years.map { |year| current_year - year }
+      (ages.sum.to_f / ages.size).round(1)
+    end
+
+    def calculate_shared_nodes(nodes1, nodes2)
+      ids1 = nodes1.map(&:id)
+      ids2 = nodes2.map(&:id)
+      (ids1 & ids2).count
+    end
+
+    def calculate_shared_vehicles(vehicles1, vehicles2)
+      ids1 = vehicles1.map(&:id)
+      ids2 = vehicles2.map(&:id)
+      (ids1 & ids2).count
+    end
+  end
+end
+
+# app/services/vehicles/assigner.rb
+module Vehicles
+  class Assigner
+    # Crea un nuevo vehículo y lo asigna a un nodo organizacional
+    # @param params [Hash] Atributos del vehículo
+    #   - :plate [String] Matrícula (obligatorio)
+    #   - :organizational_node_id [Integer] Nodo destino (obligatorio)
+    #   - :brand [String] Marca (opcional)
+    #   - :model [String] Modelo (opcional)
+    #   - :year [Integer] Año (opcional)
+    #   - :vin [String] VIN (opcional)
+    #   - :description [String] Descripción (opcional)
+    def initialize(params)
+      @params = params
+      @vehicle = nil
+      @errors = []
+    end
+
+    def call
+      validate_params
+      return false if @errors.any?
+
+      validate_node
+      return false if @errors.any?
+
+      create_and_assign_vehicle
+      @errors.empty?
+    end
+
+    attr_reader :vehicle, :errors
+
+    def success?
+      @errors.empty? && @vehicle.present? && @vehicle.persisted?
+    end
+
+    private
+
+    # Validaciones básicas de parámetros
+    def validate_params
+      if @params[:plate].blank?
+        @errors << "La matrícula es obligatoria"
+      end
+
+      if @params[:organizational_node_id].blank?
+        @errors << "El nodo organizacional es obligatorio"
+      end
+
+      # Validar año si se proporciona
+      if @params[:year].present?
+        unless @params[:year].is_a?(Integer)
+          @errors << "El año debe ser un número entero"
+        end
+
+        if @params[:year] < 1900
+          @errors << "El año debe ser mayor a 1900"
+        end
+
+        if @params[:year] > Date.current.year + 1
+          @errors << "El año no puede ser mayor a #{Date.current.year + 1}"
+        end
+      end
+
+      # Validar que la matrícula no exista
+      if @params[:plate].present?
+        normalized_plate = @params[:plate].upcase.strip
+        if Vehicle.exists?(plate: normalized_plate)
+          @errors << "La matrícula ya está registrada"
+        end
+      end
+
+      # Validar que el VIN no exista si se proporciona
+      if @params[:vin].present?
+        normalized_vin = @params[:vin].upcase.strip
+        if Vehicle.exists?(vin: normalized_vin)
+          @errors << "El VIN ya está registrado"
+        end
+      end
+    end
+
+    # Valida que el nodo exista y esté activo
+    def validate_node
+      @node = OrganizationalNode.find_by(id: @params[:organizational_node_id])
+
+      if @node.nil?
+        @errors << "El nodo organizacional no existe"
+      elsif @node.discarded?
+        @errors << "El nodo organizacional está eliminado"
+      end
+    end
+
+    # Crea el vehículo y lo asigna al nodo
+    def create_and_assign_vehicle
+      @vehicle = Vehicle.new(
+        plate: @params[:plate],
+        brand: @params[:brand],
+        model: @params[:model],
+        year: @params[:year],
+        vin: @params[:vin],
+        description: @params[:description],
+        organizational_node_id: @params[:organizational_node_id]
+      )
+
+      unless @vehicle.save
+        @errors.concat(@vehicle.errors.full_messages)
+      end
+    rescue ActiveRecord::RecordInvalid => e
+      @errors << e.message
+    rescue StandardError => e
+      @errors << "Error al crear el vehículo: #{e.message}"
+    end
+  end
+end
+
+# app/services/vehicles/relocator.rb
+module Vehicles
+  class Relocator
+    # Reubica un vehículo a otro nodo organizacional
+    # IMPORTANTE: Este servicio implementa la lógica de negocio para mover vehículos
+    # manteniendo la integridad de la visibilidad
+    #
+    # @param vehicle [Vehicle] Vehículo a reubicar
+    # @param new_node_id [Integer] ID del nuevo nodo destino
+    # @param reason [String] Razón de la reubicación (opcional, para auditoría)
+    def initialize(vehicle, new_node_id, reason: nil)
+      @vehicle = vehicle
+      @new_node_id = new_node_id
+      @reason = reason
+      @errors = []
+      @old_node = nil
+      @new_node = nil
+    end
+
+    def call
+      validate_vehicle
+      return false if @errors.any?
+
+      validate_new_node
+      return false if @errors.any?
+
+      validate_relocation
+      return false if @errors.any?
+
+      relocate_vehicle
+      @errors.empty?
+    end
+
+    attr_reader :vehicle, :errors, :old_node, :new_node
+
+    def success?
+      @errors.empty?
+    end
+
+    # Retorna información sobre la reubicación
+    def relocation_info
+      return nil unless success?
+
+      {
+        vehicle_id: @vehicle.id,
+        vehicle_plate: @vehicle.plate,
+        from_node: {
+          id: @old_node.id,
+          name: @old_node.name,
+          path: @old_node.full_path
+        },
+        to_node: {
+          id: @new_node.id,
+          name: @new_node.name,
+          path: @new_node.full_path
+        },
+        reason: @reason,
+        relocated_at: Time.current
+      }
+    end
+
+    private
+
+    def validate_vehicle
+      if @vehicle.nil?
+        @errors << "Vehículo no encontrado"
+        return
+      end
+
+      if @vehicle.discarded?
+        @errors << "No se puede reubicar un vehículo eliminado"
+        return
+      end
+
+      @old_node = @vehicle.organizational_node
+    end
+
+    def validate_new_node
+      if @new_node_id.blank?
+        @errors << "El nodo destino es obligatorio"
+        return
+      end
+
+      # Validar que no sea el mismo nodo
+      if @new_node_id == @vehicle.organizational_node_id
+        @errors << "El vehículo ya está asignado a este nodo"
+        return
+      end
+
+      # Validar que el nuevo nodo exista y esté activo
+      @new_node = OrganizationalNode.find_by(id: @new_node_id)
+
+      if @new_node.nil?
+        @errors << "El nodo destino no existe"
+      elsif @new_node.discarded?
+        @errors << "El nodo destino está eliminado"
+      end
+    end
+
+    # VALIDACIONES DE NEGOCIO para la reubicación
+    def validate_relocation
+      # REGLA: Preferiblemente los vehículos se asignan al nivel más bajo
+      # Pero no lo hacemos obligatorio en el POC para mayor flexibilidad
+
+      # Podríamos agregar validaciones adicionales aquí:
+      # - Verificar que el usuario tenga permisos en el nodo destino
+      # - Validar reglas de negocio específicas (ej: solo ciertos tipos de vehículos en ciertos nodos)
+      # - Verificar capacidad del nodo destino
+
+      # Por ahora, permitimos cualquier reubicación entre nodos activos
+    end
+
+    # Realiza la reubicación
+    def relocate_vehicle
+      ActiveRecord::Base.transaction do
+        # Actualizar el nodo del vehículo
+        @vehicle.update!(organizational_node_id: @new_node_id)
+
+        # Aquí podríamos agregar un registro de auditoría si fuera necesario
+        # AuditLog.create!(
+        #   action: 'vehicle_relocated',
+        #   vehicle: @vehicle,
+        #   old_node: @old_node,
+        #   new_node: @new_node,
+        #   reason: @reason
+        # )
+      end
+    rescue ActiveRecord::RecordInvalid => e
+      @errors << e.message
+    rescue StandardError => e
+      @errors << "Error al reubicar el vehículo: #{e.message}"
+    end
+  end
+end

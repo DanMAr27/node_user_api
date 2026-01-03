@@ -1,0 +1,142 @@
+# db/migrate/20250102000001_create_organizational_levels.rb
+class CreateOrganizationalLevels < ActiveRecord::Migration[7.0]
+  def change
+    create_table :organizational_levels do |t|
+      t.string :name, null: false, limit: 100
+      t.text :description
+      t.integer :level_order, null: false
+      t.datetime :discarded_at, index: true
+
+      t.timestamps
+    end
+
+    add_index :organizational_levels, :level_order, unique: true
+    add_index :organizational_levels, :name
+  end
+end
+
+# db/migrate/20250102000002_create_organizational_nodes.rb
+class CreateOrganizationalNodes < ActiveRecord::Migration[7.0]
+  def change
+    create_table :organizational_nodes do |t|
+      t.string :name, null: false, limit: 100
+      t.text :description
+      t.string :code, limit: 50
+      t.references :organizational_level, null: false, foreign_key: true, index: true
+
+      # Ancestry para jerarquía
+      t.string :ancestry, index: true
+      t.integer :ancestry_depth, default: 0
+
+      # Soft delete
+      t.datetime :discarded_at, index: true
+
+      t.timestamps
+    end
+
+    add_index :organizational_nodes, :name
+    add_index :organizational_nodes, :code, unique: true, where: "code IS NOT NULL"
+    add_index :organizational_nodes, [ :organizational_level_id, :name ]
+  end
+end
+
+# db/migrate/20250102000003_create_vehicles.rb
+class CreateVehicles < ActiveRecord::Migration[7.0]
+  def change
+    create_table :vehicles do |t|
+      t.string :plate, null: false, limit: 20
+      t.string :brand, limit: 50
+      t.string :model, limit: 50
+      t.integer :year
+      t.string :vin, limit: 17
+      t.text :description
+
+      # Asignación a nodo organizacional
+      t.references :organizational_node, null: false, foreign_key: true, index: true
+
+      # Soft delete
+      t.datetime :discarded_at, index: true
+
+      t.timestamps
+    end
+
+    add_index :vehicles, :plate, unique: true
+    add_index :vehicles, :vin, unique: true, where: "vin IS NOT NULL"
+    add_index :vehicles, [ :organizational_node_id, :discarded_at ]
+  end
+end
+
+# db/migrate/20250102000004_create_users.rb
+class CreateUsers < ActiveRecord::Migration[7.0]
+  def change
+    create_table :users do |t|
+      t.string :email, null: false, limit: 100
+      t.string :first_name, null: false, limit: 50
+      t.string :last_name, null: false, limit: 50
+      t.string :phone, limit: 20
+
+      # Soft delete
+      t.datetime :discarded_at, index: true
+
+      t.timestamps
+    end
+
+    add_index :users, :email, unique: true
+    add_index :users, [ :first_name, :last_name ]
+  end
+end
+
+# db/migrate/20250102000005_create_node_user_accesses.rb
+class CreateNodeUserAccesses < ActiveRecord::Migration[7.0]
+  def change
+    create_table :node_user_accesses do |t|
+      t.references :user, null: false, foreign_key: true, index: true
+      t.references :organizational_node, null: false, foreign_key: true, index: true
+
+      # Metadatos opcionales
+      t.datetime :granted_at, default: -> { 'CURRENT_TIMESTAMP' }
+      t.references :granted_by, foreign_key: { to_table: :users }
+
+      # Soft delete
+      t.datetime :discarded_at, index: true
+
+      t.timestamps
+    end
+
+    # Un usuario no puede tener acceso duplicado al mismo nodo
+    add_index :node_user_accesses,
+              [ :user_id, :organizational_node_id ],
+              unique: true,
+              name: 'index_node_user_accesses_on_user_and_node'
+
+    # Índice compuesto para queries de visibilidad
+    add_index :node_user_accesses,
+              [ :organizational_node_id, :user_id, :discarded_at ],
+              name: 'index_node_accesses_visibility'
+  end
+end
+
+# db/migrate/20250102000006_add_performance_indexes.rb
+class AddPerformanceIndexes < ActiveRecord::Migration[7.0]
+  def change
+    # Índice compuesto para queries de jerarquía con Ancestry
+    add_index :organizational_nodes,
+              [ :ancestry, :organizational_level_id ],
+              name: 'index_nodes_on_ancestry_and_level'
+
+    # Índice para búsquedas de vehículos por nodo y estado
+    add_index :vehicles,
+              [ :organizational_node_id, :plate, :discarded_at ],
+              name: 'index_vehicles_node_plate_discarded'
+
+    # Índice para filtros de nodos activos por nivel
+    add_index :organizational_nodes,
+              [ :organizational_level_id, :discarded_at ],
+              name: 'index_nodes_level_discarded'
+
+    # Índice para búsquedas de usuarios activos
+    add_index :users,
+              [ :email, :discarded_at ],
+              name: 'index_users_email_discarded'
+  end
+end
