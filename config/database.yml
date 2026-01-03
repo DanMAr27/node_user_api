@@ -13,3 +13,7 @@ development:
 test:
   <<: *default
   database: node_user_api_test
+
+roduction:
+  <<: *default
+  url: <%= ENV['DATABASE_URL'] %>

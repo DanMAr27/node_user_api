@@ -98,7 +98,7 @@ module V1
         description: "Documentación básica de la API"
       },
         base_path: "/",
-        host: Rails.env.production? ? "telemetry-api-guxp.onrender.com" : "localhost:3000",
+        host: Rails.env.production? ? "node-user-api-cd6w.onrender.com" : "localhost:3000",
         schemes: Rails.env.production? ? [ "https" ] : [ "http" ]
     )
   end

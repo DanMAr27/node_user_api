@@ -2,7 +2,7 @@
 
 GrapeSwaggerRails.options.url     = "/api/v1/swagger_doc"
 GrapeSwaggerRails.options.app_url = if Rails.env.production?
-                                      "https://telemetry-api-guxp.onrender.com"
+                                      "https://node-user-api-cd6w.onrender.com"
 else
                                       "http://localhost:3000"
 end
