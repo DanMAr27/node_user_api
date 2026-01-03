@@ -13,8 +13,7 @@ module V1
         optional :search, type: String, desc: "Buscar por nombre"
         optional :include_path, type: Boolean, desc: "Incluir ruta completa", default: true
         optional :user_id, type: Integer, desc: "Filtrar por nodos visibles para usuario"
-        optional :format, type: String, desc: "Formato de salida",
-                 values: [ "flat", "grouped" ], default: "flat"
+        optional :grouped, type: Boolean, desc: "Agrupar por nivel", default: false
       end
       get :for_select do
         query = OrganizationalNodesQuery.new
@@ -35,7 +34,7 @@ module V1
         nodes = query.call(filters).includes(:organizational_level)
 
         # Formatear según el tipo solicitado
-        if params[:format] == "grouped"
+        if params[:grouped]
           # Agrupado por nivel
           result = format_nodes_grouped(nodes, params[:include_path])
         else
