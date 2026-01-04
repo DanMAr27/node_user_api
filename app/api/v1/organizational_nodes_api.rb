@@ -1,6 +1,51 @@
 # app/api/v1/organizational_nodes_api.rb
 module V1
   class OrganizationalNodesApi < Grape::API
+    # Helpers deben estar definidos al inicio
+    helpers do
+      def format_nodes_flat(nodes, include_path)
+        nodes.map do |node|
+          {
+            value: node.id,
+            label: include_path ? node.full_path : node.name,
+            name: node.name,
+            code: node.code,
+            level_id: node.organizational_level_id,
+            level_name: node.organizational_level.name,
+            level_order: node.organizational_level.level_order,
+            depth: node.depth_level,
+            full_path: node.full_path,
+            is_leaf: node.leaf_node?,
+            vehicle_count: node.vehicles_count
+          }
+        end
+      end
+
+      def format_nodes_grouped(nodes, include_path)
+        grouped = nodes.group_by { |n| n.organizational_level }
+
+        grouped.map do |level, level_nodes|
+          {
+            label: level.name,
+            level_id: level.id,
+            level_order: level.level_order,
+            options: level_nodes.map do |node|
+              {
+                value: node.id,
+                label: include_path ? node.full_path : node.name,
+                name: node.name,
+                code: node.code,
+                depth: node.depth_level,
+                full_path: node.full_path,
+                is_leaf: node.leaf_node?,
+                vehicle_count: node.vehicles_count
+              }
+            end
+          }
+        end.sort_by { |g| g[:level_order] }
+      end
+    end
+
     resource :organizational_nodes do
       # GET /api/v1/organizational_nodes/for_select
       # Obtiene nodos en formato optimizado para select/dropdown
@@ -43,51 +88,6 @@ module V1
         end
 
         success_response(result)
-      end
-
-      # Helpers para formatear nodos
-      helpers do
-        def format_nodes_flat(nodes, include_path)
-          nodes.map do |node|
-            {
-              value: node.id,
-              label: include_path ? node.full_path : node.name,
-              name: node.name,
-              code: node.code,
-              level_id: node.organizational_level_id,
-              level_name: node.organizational_level.name,
-              level_order: node.organizational_level.level_order,
-              depth: node.depth_level,
-              full_path: node.full_path,
-              is_leaf: node.leaf_node?,
-              vehicle_count: node.vehicles_count
-            }
-          end
-        end
-
-        def format_nodes_grouped(nodes, include_path)
-          grouped = nodes.group_by { |n| n.organizational_level }
-
-          grouped.map do |level, level_nodes|
-            {
-              label: level.name,
-              level_id: level.id,
-              level_order: level.level_order,
-              options: level_nodes.map do |node|
-                {
-                  value: node.id,
-                  label: include_path ? node.full_path : node.name,
-                  name: node.name,
-                  code: node.code,
-                  depth: node.depth_level,
-                  full_path: node.full_path,
-                  is_leaf: node.leaf_node?,
-                  vehicle_count: node.vehicles_count
-                }
-              end
-            }
-          end.sort_by { |g| g[:level_order] }
-        end
       end
 
       # GET /api/v1/organizational_nodes
