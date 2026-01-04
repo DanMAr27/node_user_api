@@ -173,10 +173,11 @@ class VehiclesQuery
   def statistics
     {
       total_vehicles: @relation.count,
-      by_brand: @relation.group(:brand).count,
-      by_year: @relation.group(:year).order("year DESC").count,
+      by_brand: @relation.reorder(nil).group(:brand).count,
+      by_year: @relation.reorder(year: :desc).group(:year).count,
       by_level: @relation
         .joins(organizational_node: :organizational_level)
+        .reorder(nil)
         .group("organizational_levels.name")
         .count,
       oldest_year: @relation.minimum(:year),

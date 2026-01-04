@@ -1,6 +1,58 @@
 # app/api/v1/user_accesses_api.rb
 module V1
   class UserAccessesApi < Grape::API
+    # Helpers deben estar al inicio
+    helpers do
+      # Anota recursivamente el árbol con información de acceso
+      def annotate_tree_with_access(tree, direct_ids, visible_ids)
+        return [] if tree.blank?
+
+        tree = [ tree ] unless tree.is_a?(Array)
+
+        tree.map do |node|
+          annotated_node = node.dup
+
+          node_id = node[:id]
+          has_direct = direct_ids.include?(node_id)
+          is_visible = visible_ids.include?(node_id)
+
+          # Determinar el tipo de acceso
+          access_type = if has_direct
+            "direct"
+          elsif is_visible
+            "inherited"
+          else
+            "none"
+          end
+
+          # Agregar información de acceso
+          annotated_node[:access] = {
+            has_direct_access: has_direct,
+            is_visible_by_inheritance: is_visible && !has_direct,
+            is_visible: is_visible,
+            type: access_type,
+            # Para el frontend: indica si el checkbox debe estar marcado
+            checked: has_direct,
+            # Para el frontend: indica si debe mostrarse como heredado (ej: color diferente)
+            inherited: is_visible && !has_direct,
+            # Para el frontend: indica si está disponible para asignar
+            assignable: !has_direct
+          }
+
+          # Anotar hijos recursivamente
+          if node[:children].present? && node[:children].is_a?(Array)
+            annotated_node[:children] = annotate_tree_with_access(
+              node[:children],
+              direct_ids,
+              visible_ids
+            )
+          end
+
+          annotated_node
+        end
+      end
+    end
+
     # Endpoints para gestión de usuarios
     resource :users do
       # GET /api/v1/users
@@ -99,58 +151,6 @@ module V1
           })
         else
           error_response_from_service(service)
-        end
-      end
-
-      # Helper para anotar el árbol con información de acceso
-      helpers do
-        # Anota recursivamente el árbol con información de acceso
-        def annotate_tree_with_access(tree, direct_ids, visible_ids)
-          return [] if tree.blank?
-
-          tree = [ tree ] unless tree.is_a?(Array)
-
-          tree.map do |node|
-            annotated_node = node.dup
-
-            node_id = node[:id]
-            has_direct = direct_ids.include?(node_id)
-            is_visible = visible_ids.include?(node_id)
-
-            # Determinar el tipo de acceso
-            access_type = if has_direct
-              "direct"
-            elsif is_visible
-              "inherited"
-            else
-              "none"
-            end
-
-            # Agregar información de acceso
-            annotated_node[:access] = {
-              has_direct_access: has_direct,
-              is_visible_by_inheritance: is_visible && !has_direct,
-              is_visible: is_visible,
-              type: access_type,
-              # Para el frontend: indica si el checkbox debe estar marcado
-              checked: has_direct,
-              # Para el frontend: indica si debe mostrarse como heredado (ej: color diferente)
-              inherited: is_visible && !has_direct,
-              # Para el frontend: indica si está disponible para asignar
-              assignable: !has_direct
-            }
-
-            # Anotar hijos recursivamente
-            if node[:children].present? && node[:children].is_a?(Array)
-              annotated_node[:children] = annotate_tree_with_access(
-                node[:children],
-                direct_ids,
-                visible_ids
-              )
-            end
-
-            annotated_node
-          end
         end
       end
 

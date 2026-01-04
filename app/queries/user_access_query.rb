@@ -46,7 +46,6 @@ class UserAccessQuery
   end
 
   # Filtrar por nivel organizacional
-  # Ejemplo: Accesos a nodos del nivel "Departamento"
   def by_level(level_id)
     return @relation if level_id.blank?
 
@@ -57,26 +56,24 @@ class UserAccessQuery
   end
 
   # Accesos que cubren vehículos
-  # Solo accesos donde el nodo (o sus descendientes) tienen vehículos
   def covering_vehicles
-    node_ids_with_vehicles = Vehicle.select(:organizational_node_id).distinct
+    node_ids_with_vehicles = Vehicle.kept
+      .select(:organizational_node_id)
+      .distinct
+      .pluck(:organizational_node_id)
 
-    @relation = @relation.where(
-      organizational_node_id: OrganizationalNode
-        .where(id: node_ids_with_vehicles)
-        .or(
-          OrganizationalNode.where(
-            id: OrganizationalNode
-              .where(id: node_ids_with_vehicles)
-              .flat_map { |n| n.ancestor_ids }
-          )
-        )
-        .select(:id)
-    )
+    return self if node_ids_with_vehicles.empty?
+
+    nodes_and_ancestors = OrganizationalNode.kept
+      .where(id: node_ids_with_vehicles)
+      .flat_map { |n| n.self_and_ancestors.pluck(:id) }
+      .uniq
+
+    @relation = @relation.where(organizational_node_id: nodes_and_ancestors)
     self
   end
 
-  # Accesos a nodos sin vehículos (potencialmente redundantes o inútiles)
+  # Accesos a nodos sin vehículos
   def without_vehicles
     node_ids_without_vehicles = OrganizationalNode
       .left_joins(:vehicles)
@@ -113,11 +110,8 @@ class UserAccessQuery
     self
   end
 
-  # MÉTODO CRÍTICO: Detectar accesos redundantes
-  # Un acceso es redundante si el usuario ya tiene acceso a un ancestro
-  # Ejemplo: Si tiene acceso a "España", el acceso a "Madrid" es redundante
+  # Detectar accesos redundantes
   def redundant_accesses
-    # Obtener todos los accesos agrupados por usuario
     user_ids = @relation.select(:user_id).distinct.pluck(:user_id)
     redundant_ids = []
 
@@ -128,7 +122,6 @@ class UserAccessQuery
         node = access.organizational_node
         ancestor_ids = node.ancestor_ids
 
-        # Verificar si el usuario tiene acceso a algún ancestro
         has_ancestor_access = user_accesses.any? do |other_access|
           next if other_access.id == access.id
           ancestor_ids.include?(other_access.organizational_node_id)
@@ -139,34 +132,6 @@ class UserAccessQuery
     end
 
     @relation = @relation.where(id: redundant_ids)
-    self
-  end
-
-  # Detectar accesos que se solapan (mismos nodos o relacionados)
-  def overlapping_for_user(user)
-    return @relation.none if user.blank?
-
-    user_accesses = @relation.where(user: user).includes(:organizational_node)
-    overlapping_ids = []
-
-    user_accesses.each do |access|
-      node = access.organizational_node
-
-      # Buscar otros accesos del mismo usuario que estén en la misma rama
-      user_accesses.each do |other_access|
-        next if access.id == other_access.id
-
-        other_node = other_access.organizational_node
-
-        # Son overlapping si uno es ancestro o descendiente del otro
-        if node.ancestor_of?(other_node) || node.descendant_of?(other_node)
-          overlapping_ids << access.id
-          overlapping_ids << other_access.id
-        end
-      end
-    end
-
-    @relation = @relation.where(id: overlapping_ids.uniq)
     self
   end
 
@@ -182,9 +147,35 @@ class UserAccessQuery
         .count,
       recent_7_days: @relation.where("granted_at >= ?", 7.days.ago).count,
       recent_30_days: @relation.where("granted_at >= ?", 30.days.ago).count,
-      with_vehicles: covering_vehicles.count,
-      average_vehicles_per_access: calculate_average_vehicles_per_access
+      with_vehicles: count_with_vehicles,
+      average_vehicles_per_access: calculate_average_vehicles
     }
+  end
+
+  # Detectar accesos solapados
+  def overlapping_for_user(user)
+    return @relation.none if user.blank?
+
+    user_accesses = @relation.where(user: user).includes(:organizational_node)
+    overlapping_ids = []
+
+    user_accesses.each do |access|
+      node = access.organizational_node
+
+      user_accesses.each do |other_access|
+        next if access.id == other_access.id
+
+        other_node = other_access.organizational_node
+
+        if node.ancestor_of?(other_node) || node.descendant_of?(other_node)
+          overlapping_ids << access.id
+          overlapping_ids << other_access.id
+        end
+      end
+    end
+
+    @relation = @relation.where(id: overlapping_ids.uniq)
+    self
   end
 
   # Usuarios con más accesos
@@ -205,23 +196,19 @@ class UserAccessQuery
       .count
   end
 
-  # MÉTODO ANALÍTICO: Calcular cobertura de visibilidad
-  # Retorna cuántos vehículos puede ver cada usuario
+  # Calcular cobertura de visibilidad
   def visibility_coverage
     result = {}
-
     user_ids = @relation.select(:user_id).distinct.pluck(:user_id)
 
     user_ids.each do |user_id|
       user = User.find(user_id)
       accessible_nodes = user.accessible_nodes
 
-      # Expandir a todos los nodos visibles (con descendientes)
       visible_node_ids = accessible_nodes.flat_map do |node|
         node.self_and_descendants.pluck(:id)
       end.uniq
 
-      # Contar vehículos en esos nodos
       vehicles_count = Vehicle.where(organizational_node_id: visible_node_ids).count
 
       result[user_id] = {
@@ -235,8 +222,7 @@ class UserAccessQuery
     result
   end
 
-  # Matriz de acceso: qué usuarios tienen acceso a qué nodos
-  # Útil para auditoría y visualización
+  # Matriz de acceso
   def access_matrix
     @relation
       .includes(:user, :organizational_node)
@@ -275,8 +261,25 @@ class UserAccessQuery
     @relation
   end
 
-  # Calcular promedio de vehículos por acceso
-  def calculate_average_vehicles_per_access
+  # Cuenta accesos que cubren vehículos
+  def count_with_vehicles
+    node_ids_with_vehicles = Vehicle.kept
+      .select(:organizational_node_id)
+      .distinct
+      .pluck(:organizational_node_id)
+
+    return 0 if node_ids_with_vehicles.empty?
+
+    nodes_and_ancestors = OrganizationalNode.kept
+      .where(id: node_ids_with_vehicles)
+      .flat_map { |n| n.self_and_ancestors.pluck(:id) }
+      .uniq
+
+    @relation.where(organizational_node_id: nodes_and_ancestors).count
+  end
+
+  # Calcula promedio de vehículos por acceso
+  def calculate_average_vehicles
     accesses_with_counts = @relation.includes(:organizational_node).map do |access|
       access.organizational_node.total_vehicles_count
     end
