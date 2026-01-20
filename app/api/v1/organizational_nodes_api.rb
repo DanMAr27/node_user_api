@@ -90,6 +90,23 @@ module V1
         success_response(result)
       end
 
+      desc "Listar nodos para selector (versión ligera)"
+      get "for_select/light" do
+        # No podemos usar pluck con full_path porque es un método, no una columna
+        # Cargamos solo los campos necesarios y luego ordenamos por el path completo
+        nodes = OrganizationalNode.kept
+                                   .select(:id, :name, :ancestry)
+                                   .all
+
+        # Mapeamos y ordenamos por el full_path
+        nodes.map do |node|
+          {
+            value: node.id,
+            label: node.full_path
+          }
+        end.sort_by { |item| item[:label] }
+      end
+
       # GET /api/v1/organizational_nodes
       # Lista nodos con filtros opcionales
       desc "Lista nodos organizacionales con filtros" do
@@ -168,6 +185,16 @@ module V1
         else
           error_response_from_service(service)
         end
+      end
+
+      desc "Obtiene el árbol para la UI de gestión" do
+        success Entities::OrganizationalNodeTreeUiEntity
+        detail "Retorna id, name, level_name, vehicles_count y children"
+      end
+      get :treeui do
+        service = OrganizationalNodes::TreeBuilders::BasicTreeBuilder.new
+        tree = service.call
+        present tree, with: Entities::OrganizationalNodeTreeUiEntity
       end
 
       # GET /api/v1/organizational_nodes/:id

@@ -89,7 +89,6 @@ class NodeUserAccess < ApplicationRecord
     end
   end
 end
-
 # app/models/organizational_level.rb
 class OrganizationalLevel < ApplicationRecord
   include SoftDeletable
@@ -152,7 +151,6 @@ class OrganizationalLevel < ApplicationRecord
     kept.find_by(level_order: order)
   end
 end
-
 # app/models/organizational_node.rb
 class OrganizationalNode < ApplicationRecord
   include SoftDeletable
@@ -245,7 +243,6 @@ class OrganizationalNode < ApplicationRecord
     end
   end
 end
-
 # app/models/user.rb
 class User < ApplicationRecord
   include SoftDeletable
@@ -345,7 +342,6 @@ class User < ApplicationRecord
     self.email = email&.downcase&.strip
   end
 end
-
 # app/models/vehicle.rb
 class Vehicle < ApplicationRecord
   include SoftDeletable
@@ -418,197 +414,5 @@ class Vehicle < ApplicationRecord
 
   def normalize_vin
     self.vin = vin&.upcase&.strip if vin.present?
-  end
-end
-
-
-# app/models/concerns/hierarchy_queryable.rb
-module HierarchyQueryable
-  extend ActiveSupport::Concern
-
-  included do
-    # Ancestry ya provee: parent, children, ancestors, descendants, siblings, etc.
-    # Este concern agrega métodos adicionales útiles
-  end
-
-  # Métodos de instancia
-
-  # Obtener todos los ancestros incluyendo el nodo actual
-  def self_and_ancestors
-    ancestors.to_a.push(self)
-  end
-
-  # Obtener todos los descendientes incluyendo el nodo actual
-  def self_and_descendants
-    descendants.to_a.push(self)
-  end
-
-  # Obtener toda la rama (ancestros + self + descendientes)
-  def branch
-    (ancestors.to_a + [ self ] + descendants.to_a).uniq
-  end
-
-  # Verificar si es nodo raíz
-  def root_node?
-    parent_id.nil?
-  end
-
-  # Verificar si es nodo hoja (sin hijos)
-  def leaf_node?
-    children.empty?
-  end
-
-  # Obtener el nivel de profundidad (0 = raíz)
-  def depth_level
-    ancestry_depth || 0
-  end
-
-  # Obtener la ruta completa de nombres desde la raíz
-  def path_names
-    self_and_ancestors.map(&:name)
-  end
-
-  # Obtener la ruta completa como string
-  def full_path(separator: " > ")
-    path_names.join(separator)
-  end
-
-  # Verificar si un nodo es descendiente de otro
-  def descendant_of?(node)
-    return false if node.nil?
-    ancestor_ids.include?(node.id)
-  end
-
-  # Verificar si un nodo es ancestro de otro
-  def ancestor_of?(node)
-    return false if node.nil?
-    node.descendant_of?(self)
-  end
-
-  # Métodos de clase
-  module ClassMethods
-    # Obtener todos los nodos raíz
-    def roots
-      where(ancestry: nil)
-    end
-
-    # Obtener nodos hojas (sin hijos)
-    def leaves
-      where.not(id: select(:parent_id).distinct)
-    end
-
-    # Construir árbol jerárquico como hash
-    def arrange_as_tree
-      arrange
-    end
-
-    # Obtener nodos por profundidad
-    def at_depth(depth)
-      where(ancestry_depth: depth)
-    end
-
-    # Obtener nodos de un nivel específico
-    def by_level(level_id)
-      where(organizational_level_id: level_id)
-    end
-  end
-end
-
-# app/models/concerns/soft_deletable.rb
-module SoftDeletable
-  extend ActiveSupport::Concern
-
-  included do
-    include Discard::Model
-
-    # Scope por defecto para excluir registros eliminados
-    default_scope -> { kept }
-
-    # Scopes adicionales
-    scope :with_discarded, -> { unscope(where: :discarded_at) }
-    scope :only_discarded, -> { unscope(where: :discarded_at).discarded }
-  end
-
-  # Métodos de instancia
-  def active?
-    !discarded?
-  end
-
-  def deleted?
-    discarded?
-  end
-
-  # Alias para mantener consistencia semántica
-  def soft_delete
-    discard
-  end
-
-  def restore
-    undiscard
-  end
-end
-
-# app/models/concerns/visibility_scopes.rb
-module VisibilityScopes
-  extend ActiveSupport::Concern
-
-  included do
-    # Scope para filtrar por nodos específicos
-    scope :in_nodes, ->(node_ids) {
-      where(organizational_node_id: node_ids)
-    }
-
-    # Scope para filtrar por una rama jerárquica completa
-    scope :in_branch, ->(node) {
-      return none if node.nil?
-
-      # Obtener el nodo y todos sus descendientes
-      node_ids = node.self_and_descendants.pluck(:id)
-      in_nodes(node_ids)
-    }
-
-    # Scope para filtrar por múltiples ramas
-    scope :in_branches, ->(nodes) {
-      return none if nodes.blank?
-
-      node_ids = nodes.flat_map { |node| node.self_and_descendants.pluck(:id) }.uniq
-      in_nodes(node_ids)
-    }
-
-    # Scope para filtrar por nivel organizacional
-    scope :by_organizational_level, ->(level_id) {
-      joins(:organizational_node).where(organizational_nodes: { organizational_level_id: level_id })
-    }
-  end
-
-  module ClassMethods
-    # Obtener registros visibles para un usuario basado en sus nodos asignados
-    def visible_for_user(user)
-      return none if user.nil?
-
-      # Obtener nodos a los que el usuario tiene acceso
-      accessible_nodes = user.accessible_nodes
-      return none if accessible_nodes.empty?
-
-      # Retornar todos los registros en las ramas de esos nodos
-      in_branches(accessible_nodes)
-    end
-
-    # Obtener registros por nodo específico (sin herencia)
-    def directly_in_node(node)
-      where(organizational_node_id: node.id)
-    end
-
-    # Contar registros por nodo (agrupados)
-    def count_by_node
-      group(:organizational_node_id).count
-    end
-
-    # Contar registros por nivel organizacional
-    def count_by_level
-      joins(:organizational_node)
-        .group("organizational_nodes.organizational_level_id")
-        .count
-    end
   end
 end

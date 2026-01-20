@@ -1,7 +1,5 @@
 # app/api/entities/organizational_node_simple_entity.rb
 module Entities
-  # Entity simplificada para evitar recursión infinita
-  # Se usa cuando se incluyen parent o children
   class OrganizationalNodeSimpleEntity < BaseEntity
     # Campos básicos
     expose_id

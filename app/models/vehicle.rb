@@ -4,7 +4,7 @@ class Vehicle < ApplicationRecord
   include VisibilityScopes
 
   # Asociaciones
-  belongs_to :organizational_node
+  belongs_to :organizational_node, counter_cache: true
 
   # Delegaciones para acceso rápido
   delegate :organizational_level, to: :organizational_node

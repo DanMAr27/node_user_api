@@ -14,7 +14,6 @@ class CreateOrganizationalLevels < ActiveRecord::Migration[7.0]
     add_index :organizational_levels, :name
   end
 end
-
 # db/migrate/20250102000002_create_organizational_nodes.rb
 class CreateOrganizationalNodes < ActiveRecord::Migration[7.0]
   def change
@@ -39,7 +38,6 @@ class CreateOrganizationalNodes < ActiveRecord::Migration[7.0]
     add_index :organizational_nodes, [ :organizational_level_id, :name ]
   end
 end
-
 # db/migrate/20250102000003_create_vehicles.rb
 class CreateVehicles < ActiveRecord::Migration[7.0]
   def change
@@ -65,7 +63,6 @@ class CreateVehicles < ActiveRecord::Migration[7.0]
     add_index :vehicles, [ :organizational_node_id, :discarded_at ]
   end
 end
-
 # db/migrate/20250102000004_create_users.rb
 class CreateUsers < ActiveRecord::Migration[7.0]
   def change
@@ -85,7 +82,6 @@ class CreateUsers < ActiveRecord::Migration[7.0]
     add_index :users, [ :first_name, :last_name ]
   end
 end
-
 # db/migrate/20250102000005_create_node_user_accesses.rb
 class CreateNodeUserAccesses < ActiveRecord::Migration[7.0]
   def change
@@ -115,7 +111,6 @@ class CreateNodeUserAccesses < ActiveRecord::Migration[7.0]
               name: 'index_node_accesses_visibility'
   end
 end
-
 # db/migrate/20250102000006_add_performance_indexes.rb
 class AddPerformanceIndexes < ActiveRecord::Migration[7.0]
   def change

@@ -24,7 +24,6 @@ module Entities
     end
   end
 end
-
 # app/api/entities/error_entity.rb
 module Entities
   class ErrorEntity < Grape::Entity
@@ -47,7 +46,6 @@ module Entities
     end
   end
 end
-
 # app/api/entities/node_user_access_entity.rb
 module Entities
   class NodeUserAccessEntity < BaseEntity
@@ -92,7 +90,6 @@ module Entities
     end
   end
 end
-
 # app/api/entities/organizational_level_entity.rb
 module Entities
   class OrganizationalLevelEntity < BaseEntity
@@ -127,7 +124,6 @@ module Entities
     end
   end
 end
-
 # app/api/entities/organizational_node_entity.rb
 module Entities
   class OrganizationalNodeEntity < BaseEntity
@@ -194,7 +190,6 @@ module Entities
     expose :vehicles, using: Entities::VehicleEntity, if: { include_vehicles: true }
   end
 end
-
 # app/api/entities/organizational_node_simple_entity.rb
 module Entities
   # Entity simplificada para evitar recursión infinita
@@ -232,7 +227,6 @@ module Entities
     expose :organizational_level, using: Entities::OrganizationalLevelEntity, if: { include_level: true }
   end
 end
-
 # app/api/entities/organizational_tree_entity.rb
 module Entities
   class OrganizationalTreeEntity < BaseEntity
@@ -270,7 +264,6 @@ module Entities
     end
   end
 end
-
 # app/api/entities/user_entity.rb
 module Entities
   class UserEntity < BaseEntity
@@ -305,7 +298,6 @@ module Entities
     expose :accessible_nodes, using: Entities::OrganizationalNodeEntity, if: { include_accessible_nodes: true }
   end
 end
-
 # app/api/entities/vehicle_entity.rb
 module Entities
   class VehicleEntity < BaseEntity

@@ -42,15 +42,13 @@ module OrganizationalLevels
         @errors << "El nombre es obligatorio"
       end
 
-      if @params[:level_order].blank?
-        @errors << "El orden del nivel es obligatorio"
-      elsif !@params[:level_order].is_a?(Integer) || @params[:level_order] < 1
+      if @params[:level_order].present? && (!@params[:level_order].is_a?(Integer) || @params[:level_order] < 1)
         @errors << "El orden del nivel debe ser un número entero positivo"
       end
 
       # Validar que no exista otro nivel con el mismo orden
       if @params[:level_order].present?
-        if OrganizationalLevel.exists?(level_order: @params[:level_order])
+        if OrganizationalLevel.kept.exists?(level_order: @params[:level_order])
           @errors << "Ya existe un nivel con el orden #{@params[:level_order]}"
         end
       end

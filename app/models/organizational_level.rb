@@ -11,6 +11,9 @@ class OrganizationalLevel < ApplicationRecord
                           numericality: { only_integer: true, greater_than: 0 },
                           uniqueness: { conditions: -> { kept } }
 
+  # Callbacks
+  before_validation :generate_level_order, on: :create
+
   # Scopes
   scope :ordered, -> { order(:level_order) }
   scope :by_order, ->(order) { where(level_order: order) }
@@ -58,5 +61,14 @@ class OrganizationalLevel < ApplicationRecord
 
   def self.find_by_order(order)
     kept.find_by(level_order: order)
+  end
+
+  private
+
+  def generate_level_order
+    return if level_order.present?
+
+    max_order = self.class.kept.maximum(:level_order) || 0
+    self.level_order = max_order + 1
   end
 end

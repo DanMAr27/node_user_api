@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 8) do
+ActiveRecord::Schema[8.0].define(version: 2026_01_20_092036) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -38,7 +38,7 @@ ActiveRecord::Schema[8.0].define(version: 8) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["discarded_at"], name: "index_organizational_levels_on_discarded_at"
-    t.index ["level_order"], name: "index_organizational_levels_on_level_order", unique: true
+    t.index ["level_order"], name: "index_organizational_levels_on_level_order", unique: true, where: "(discarded_at IS NULL)"
     t.index ["name"], name: "index_organizational_levels_on_name"
   end
 
@@ -52,6 +52,7 @@ ActiveRecord::Schema[8.0].define(version: 8) do
     t.datetime "discarded_at"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.integer "vehicles_count", default: 0, null: false
     t.index ["ancestry", "organizational_level_id"], name: "index_nodes_on_ancestry_and_level"
     t.index ["ancestry"], name: "index_organizational_nodes_on_ancestry"
     t.index ["code"], name: "index_organizational_nodes_on_code", unique: true, where: "(code IS NOT NULL)"
@@ -60,6 +61,7 @@ ActiveRecord::Schema[8.0].define(version: 8) do
     t.index ["organizational_level_id", "discarded_at"], name: "index_nodes_level_discarded"
     t.index ["organizational_level_id", "name"], name: "index_organizational_nodes_on_organizational_level_id_and_name"
     t.index ["organizational_level_id"], name: "index_organizational_nodes_on_organizational_level_id"
+    t.index ["vehicles_count"], name: "index_organizational_nodes_on_vehicles_count"
   end
 
   create_table "users", force: :cascade do |t|

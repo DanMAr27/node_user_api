@@ -74,7 +74,6 @@ module OrganizationalLevels
     end
   end
 end
-
 # app/services/organizational_levels/destroyer.rb
 module OrganizationalLevels
   class Destroyer
@@ -132,7 +131,6 @@ module OrganizationalLevels
     end
   end
 end
-
 # app/services/organizational_levels/updater.rb
 module OrganizationalLevels
   class Updater
@@ -211,7 +209,6 @@ module OrganizationalLevels
     end
   end
 end
-
 # app/services/organizational_nodes/creator.rb
 module OrganizationalNodes
   class Creator
@@ -322,7 +319,6 @@ module OrganizationalNodes
     end
   end
 end
-
 # app/services/organizational_nodes/destroyer.rb
 module OrganizationalNodes
   class Destroyer
@@ -432,7 +428,6 @@ module OrganizationalNodes
     end
   end
 end
-
 # app/services/organizational_nodes/tree_builder.rb
 module OrganizationalNodes
   class TreeBuilder
@@ -598,7 +593,6 @@ module OrganizationalNodes
     end
   end
 end
-
 # app/services/organizational_nodes/updater.rb
 module OrganizationalNodes
   class Updater
@@ -734,7 +728,6 @@ module OrganizationalNodes
     end
   end
 end
-
 # app/services/user_access/access_manager.rb
 module UserAccess
   class AccessManager
@@ -1000,7 +993,6 @@ module UserAccess
     end
   end
 end
-
 # app/services/user_access/visibility_calculator.rb
 module UserAccess
   class VisibilityCalculator
@@ -1269,7 +1261,6 @@ module UserAccess
     end
   end
 end
-
 # app/services/vehicles/assigner.rb
 module Vehicles
   class Assigner
@@ -1382,7 +1373,6 @@ module Vehicles
     end
   end
 end
-
 # app/services/vehicles/relocator.rb
 module Vehicles
   class Relocator

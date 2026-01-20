@@ -1,0 +1,972 @@
+# app/models/concerns/hierarchy_queryable.rb
+module HierarchyQueryable
+  extend ActiveSupport::Concern
+
+  included do
+    # Ancestry ya provee: parent, children, ancestors, descendants, siblings, etc.
+    # Este concern agrega métodos adicionales útiles
+  end
+
+  # Métodos de instancia
+
+  # Obtener todos los ancestros incluyendo el nodo actual
+  def self_and_ancestors
+    ancestors.to_a.push(self)
+  end
+
+  # Obtener todos los descendientes incluyendo el nodo actual
+  def self_and_descendants
+    descendants.to_a.push(self)
+  end
+
+  # Obtener toda la rama (ancestros + self + descendientes)
+  def branch
+    (ancestors.to_a + [ self ] + descendants.to_a).uniq
+  end
+
+  # Verificar si es nodo raíz
+  def root_node?
+    parent_id.nil?
+  end
+
+  # Verificar si es nodo hoja (sin hijos)
+  def leaf_node?
+    children.empty?
+  end
+
+  # Obtener el nivel de profundidad (0 = raíz)
+  def depth_level
+    ancestry_depth || 0
+  end
+
+  # Obtener la ruta completa de nombres desde la raíz
+  def path_names
+    self_and_ancestors.map(&:name)
+  end
+
+  # Obtener la ruta completa como string
+  def full_path(separator: " > ")
+    path_names.join(separator)
+  end
+
+  # Verificar si un nodo es descendiente de otro
+  def descendant_of?(node)
+    return false if node.nil?
+    ancestor_ids.include?(node.id)
+  end
+
+  # Verificar si un nodo es ancestro de otro
+  def ancestor_of?(node)
+    return false if node.nil?
+    node.descendant_of?(self)
+  end
+
+  # Métodos de clase
+  module ClassMethods
+    # Obtener todos los nodos raíz
+    def roots
+      where(ancestry: nil)
+    end
+
+    # Obtener nodos hojas (sin hijos)
+    def leaves
+      where.not(id: select(:parent_id).distinct)
+    end
+
+    # Construir árbol jerárquico como hash
+    def arrange_as_tree
+      arrange
+    end
+
+    # Obtener nodos por profundidad
+    def at_depth(depth)
+      where(ancestry_depth: depth)
+    end
+
+    # Obtener nodos de un nivel específico
+    def by_level(level_id)
+      where(organizational_level_id: level_id)
+    end
+  end
+end
+# app/models/concerns/soft_deletable.rb
+module SoftDeletable
+  extend ActiveSupport::Concern
+
+  included do
+    include Discard::Model
+
+    # Scope por defecto para excluir registros eliminados
+    default_scope -> { kept }
+
+    # Scopes adicionales
+    scope :with_discarded, -> { unscope(where: :discarded_at) }
+    scope :only_discarded, -> { unscope(where: :discarded_at).discarded }
+  end
+
+  # Métodos de instancia
+  def active?
+    !discarded?
+  end
+
+  def deleted?
+    discarded?
+  end
+
+  # Alias para mantener consistencia semántica
+  def soft_delete
+    discard
+  end
+
+  def restore
+    undiscard
+  end
+end
+# app/models/concerns/visibility_scopes.rb
+module VisibilityScopes
+  extend ActiveSupport::Concern
+
+  included do
+    # Scope para filtrar por nodos específicos
+    scope :in_nodes, ->(node_ids) {
+      where(organizational_node_id: node_ids)
+    }
+
+    # Scope para filtrar por una rama jerárquica completa
+    scope :in_branch, ->(node) {
+      return none if node.nil?
+
+      # Obtener el nodo y todos sus descendientes
+      node_ids = node.self_and_descendants.pluck(:id)
+      in_nodes(node_ids)
+    }
+
+    # Scope para filtrar por múltiples ramas
+    scope :in_branches, ->(nodes) {
+      return none if nodes.blank?
+
+      node_ids = nodes.flat_map { |node| node.self_and_descendants.pluck(:id) }.uniq
+      in_nodes(node_ids)
+    }
+
+    # Scope para filtrar por nivel organizacional
+    scope :by_organizational_level, ->(level_id) {
+      joins(:organizational_node).where(organizational_nodes: { organizational_level_id: level_id })
+    }
+  end
+
+  module ClassMethods
+    # Obtener registros visibles para un usuario basado en sus nodos asignados
+    def visible_for_user(user)
+      return none if user.nil?
+
+      # Obtener nodos a los que el usuario tiene acceso
+      accessible_nodes = user.accessible_nodes
+      return none if accessible_nodes.empty?
+
+      # Retornar todos los registros en las ramas de esos nodos
+      in_branches(accessible_nodes)
+    end
+
+    # Obtener registros por nodo específico (sin herencia)
+    def directly_in_node(node)
+      where(organizational_node_id: node.id)
+    end
+
+    # Contar registros por nodo (agrupados)
+    def count_by_node
+      group(:organizational_node_id).count
+    end
+
+    # Contar registros por nivel organizacional
+    def count_by_level
+      joins(:organizational_node)
+        .group("organizational_nodes.organizational_level_id")
+        .count
+    end
+  end
+end
+# app/queries/organizational_nodes_query.rb
+class OrganizationalNodesQuery
+  # Inicializa la query con una relación base de OrganizationalNode
+  # Por defecto usa todos los nodos activos (kept)
+  def initialize(relation = OrganizationalNode.all)
+    @relation = relation
+  end
+
+  # Método principal que aplica todos los filtros y retorna la relación
+  def call(filters = {})
+    @relation = apply_filters(filters)
+    @relation
+  end
+
+  # Buscar por nivel organizacional específico
+  # Ejemplo: query.by_level(1) -> todos los nodos del nivel 1
+  def by_level(level_id)
+    return @relation if level_id.blank?
+    @relation = @relation.where(organizational_level_id: level_id)
+    self
+  end
+
+  # Buscar solo nodos raíz (sin padre)
+  # Útil para construir árboles desde arriba
+  def roots_only
+    @relation = @relation.where(ancestry: nil)
+    self
+  end
+
+  # Buscar solo nodos hoja (sin hijos)
+  # Útil para listar nodos finales donde se asignan vehículos
+  def leaves_only
+    @relation = @relation.where.not(
+      id: OrganizationalNode.select(:parent_id).distinct
+    )
+    self
+  end
+
+  # Buscar por profundidad específica
+  # Ejemplo: at_depth(2) -> nodos a 2 niveles del root
+  def at_depth(depth)
+    return @relation if depth.blank?
+    @relation = @relation.where(ancestry_depth: depth)
+    self
+  end
+
+  # Buscar nodos que sean descendientes de un nodo específico
+  # Incluye el nodo mismo si include_self es true
+  def descendants_of(node, include_self: false)
+    return @relation if node.blank?
+
+    if include_self
+      node_ids = node.self_and_descendants.pluck(:id)
+    else
+      node_ids = node.descendants.pluck(:id)
+    end
+
+    @relation = @relation.where(id: node_ids)
+    self
+  end
+
+  # Buscar nodos que sean ancestros de un nodo específico
+  def ancestors_of(node, include_self: false)
+    return @relation if node.blank?
+
+    if include_self
+      node_ids = node.self_and_ancestors.pluck(:id)
+    else
+      node_ids = node.ancestors.pluck(:id)
+    end
+
+    @relation = @relation.where(id: node_ids)
+    self
+  end
+
+  # Buscar por nombre (búsqueda parcial, case insensitive)
+  # Ejemplo: by_name("Madrid") -> encuentra "Madrid Centro", "madrid", etc.
+  def by_name(name)
+    return @relation if name.blank?
+    @relation = @relation.where("name ILIKE ?", "%#{sanitize(name)}%")
+    self
+  end
+
+  # Buscar por código exacto
+  def by_code(code)
+    return @relation if code.blank?
+    @relation = @relation.where(code: code)
+    self
+  end
+
+  # Buscar nodos que tienen vehículos asignados
+  # Si minimum es especificado, solo nodos con al menos esa cantidad
+  def with_vehicles(minimum: 1)
+    @relation = @relation
+      .joins(:vehicles)
+      .group("organizational_nodes.id")
+      .having("COUNT(vehicles.id) >= ?", minimum)
+    self
+  end
+
+  # Buscar nodos sin vehículos asignados
+  def without_vehicles
+    @relation = @relation
+      .left_joins(:vehicles)
+      .where(vehicles: { id: nil })
+    self
+  end
+
+  # Buscar nodos con usuarios asignados
+  def with_users
+    @relation = @relation
+      .joins(:node_user_accesses)
+      .distinct
+    self
+  end
+
+  # Buscar nodos sin usuarios asignados
+  def without_users
+    @relation = @relation
+      .left_joins(:node_user_accesses)
+      .where(node_user_accesses: { id: nil })
+    self
+  end
+
+  # Ordenar por diferentes criterios
+  def ordered_by(field, direction = :asc)
+    direction = direction.to_sym
+
+    case field.to_s
+    when "name"
+      @relation = @relation.order(name: direction)
+    when "level"
+      @relation = @relation
+        .joins(:organizational_level)
+        .order("organizational_levels.level_order #{direction}")
+    when "depth"
+      @relation = @relation.order(ancestry_depth: direction)
+    when "created_at"
+      @relation = @relation.order(created_at: direction)
+    when "vehicles_count"
+      # Ordenar por cantidad de vehículos (requiere join)
+      @relation = @relation
+        .left_joins(:vehicles)
+        .group("organizational_nodes.id")
+        .order("COUNT(vehicles.id) #{direction}")
+    else
+      @relation = @relation.order(name: :asc)
+    end
+
+    self
+  end
+
+  # Construir árbol jerárquico completo
+  # Retorna un hash anidado con la estructura del árbol
+  # Formato: { node => { child_node => {}, another_child => {} } }
+  def as_tree
+    @relation.arrange
+  end
+
+  # Obtener estadísticas de los nodos en la query
+  def statistics
+    {
+      total_nodes: @relation.count,
+      root_nodes: @relation.where(ancestry: nil).count,
+      leaf_nodes: @relation.where.not(
+        id: OrganizationalNode.select(:parent_id).distinct
+      ).count,
+      total_vehicles: Vehicle.where(
+        organizational_node_id: @relation.select(:id)
+      ).count,
+      nodes_with_vehicles: @relation.joins(:vehicles).distinct.count,
+      nodes_with_users: @relation.joins(:node_user_accesses).distinct.count,
+      average_depth: @relation.average(:ancestry_depth).to_f.round(2)
+    }
+  end
+
+  # Buscar nodos accesibles por un usuario específico
+  # Retorna los nodos que el usuario puede ver
+  def accessible_by_user(user)
+    return @relation.none if user.blank?
+
+    accessible_node_ids = user.accessible_nodes.pluck(:id)
+    return @relation.none if accessible_node_ids.empty?
+
+    # Expandir a todos los descendientes de los nodos accesibles
+    all_accessible_ids = OrganizationalNode
+      .where(id: accessible_node_ids)
+      .flat_map { |node| node.self_and_descendants.pluck(:id) }
+      .uniq
+
+    @relation = @relation.where(id: all_accessible_ids)
+    self
+  end
+
+  private
+
+  # Aplica múltiples filtros de una vez desde un hash
+  # Ejemplo: apply_filters({ level_id: 1, name: "Madrid", roots_only: true })
+  def apply_filters(filters)
+    result = @relation
+
+    result = by_level(filters[:level_id]) if filters[:level_id].present?
+    result = by_name(filters[:name]) if filters[:name].present?
+    result = by_code(filters[:code]) if filters[:code].present?
+    result = at_depth(filters[:depth]) if filters[:depth].present?
+    result = roots_only if filters[:roots_only]
+    result = leaves_only if filters[:leaves_only]
+    result = with_vehicles if filters[:with_vehicles]
+    result = without_vehicles if filters[:without_vehicles]
+    result = with_users if filters[:with_users]
+    result = without_users if filters[:without_users]
+    result = descendants_of(filters[:parent_node], include_self: filters[:include_parent]) if filters[:parent_node].present?
+    result = accessible_by_user(filters[:user]) if filters[:user].present?
+    result = ordered_by(filters[:order_by] || "name", filters[:order_direction] || :asc)
+
+    @relation
+  end
+
+  # Sanitiza input del usuario para evitar SQL injection
+  def sanitize(value)
+    ActiveRecord::Base.sanitize_sql_like(value)
+  end
+end
+# app/queries/user_access_query.rb
+class UserAccessQuery
+  # Inicializa con relación base de accesos activos
+  def initialize(relation = NodeUserAccess.all)
+    @relation = relation
+  end
+
+  # Método principal
+  def call(filters = {})
+    @relation = apply_filters(filters)
+    @relation
+  end
+
+  # Filtrar accesos de un usuario específico
+  def for_user(user)
+    return @relation if user.blank?
+    @relation = @relation.where(user: user)
+    self
+  end
+
+  # Filtrar accesos a un nodo específico
+  def for_node(node)
+    return @relation if node.blank?
+    @relation = @relation.where(organizational_node: node)
+    self
+  end
+
+  # Filtrar accesos otorgados por un usuario específico
+  def granted_by(user)
+    return @relation if user.blank?
+    @relation = @relation.where(granted_by: user)
+    self
+  end
+
+  # Filtrar accesos otorgados en un rango de fechas
+  def granted_between(start_date, end_date)
+    return @relation if start_date.blank? || end_date.blank?
+    @relation = @relation.where(granted_at: start_date..end_date)
+    self
+  end
+
+  # Filtrar accesos recientes (últimos N días)
+  def recent(days = 7)
+    @relation = @relation.where("granted_at >= ?", days.days.ago)
+    self
+  end
+
+  # Filtrar por nivel organizacional
+  def by_level(level_id)
+    return @relation if level_id.blank?
+
+    @relation = @relation
+      .joins(:organizational_node)
+      .where(organizational_nodes: { organizational_level_id: level_id })
+    self
+  end
+
+  # Accesos que cubren vehículos
+  def covering_vehicles
+    node_ids_with_vehicles = Vehicle.kept
+      .select(:organizational_node_id)
+      .distinct
+      .pluck(:organizational_node_id)
+
+    return self if node_ids_with_vehicles.empty?
+
+    nodes_and_ancestors = OrganizationalNode.kept
+      .where(id: node_ids_with_vehicles)
+      .flat_map { |n| n.self_and_ancestors.pluck(:id) }
+      .uniq
+
+    @relation = @relation.where(organizational_node_id: nodes_and_ancestors)
+    self
+  end
+
+  # Accesos a nodos sin vehículos
+  def without_vehicles
+    node_ids_without_vehicles = OrganizationalNode
+      .left_joins(:vehicles)
+      .where(vehicles: { id: nil })
+      .pluck(:id)
+
+    @relation = @relation.where(organizational_node_id: node_ids_without_vehicles)
+    self
+  end
+
+  # Ordenar por diferentes criterios
+  def ordered_by(field, direction = :asc)
+    direction = direction.to_sym
+
+    case field.to_s
+    when "granted_at"
+      @relation = @relation.order(granted_at: direction)
+    when "user"
+      @relation = @relation
+        .joins(:user)
+        .order("users.first_name #{direction}, users.last_name #{direction}")
+    when "node"
+      @relation = @relation
+        .joins(:organizational_node)
+        .order("organizational_nodes.name #{direction}")
+    when "level"
+      @relation = @relation
+        .joins(organizational_node: :organizational_level)
+        .order("organizational_levels.level_order #{direction}")
+    else
+      @relation = @relation.order(granted_at: :desc)
+    end
+
+    self
+  end
+
+  # Detectar accesos redundantes
+  def redundant_accesses
+    user_ids = @relation.select(:user_id).distinct.pluck(:user_id)
+    redundant_ids = []
+
+    user_ids.each do |user_id|
+      user_accesses = @relation.where(user_id: user_id).includes(:organizational_node)
+
+      user_accesses.each do |access|
+        node = access.organizational_node
+        ancestor_ids = node.ancestor_ids
+
+        has_ancestor_access = user_accesses.any? do |other_access|
+          next if other_access.id == access.id
+          ancestor_ids.include?(other_access.organizational_node_id)
+        end
+
+        redundant_ids << access.id if has_ancestor_access
+      end
+    end
+
+    @relation = @relation.where(id: redundant_ids)
+    self
+  end
+
+  # Estadísticas de accesos
+  def statistics
+    {
+      total_accesses: @relation.count,
+      unique_users: @relation.select(:user_id).distinct.count,
+      unique_nodes: @relation.select(:organizational_node_id).distinct.count,
+      by_level: @relation
+        .joins(organizational_node: :organizational_level)
+        .group("organizational_levels.name")
+        .count,
+      recent_7_days: @relation.where("granted_at >= ?", 7.days.ago).count,
+      recent_30_days: @relation.where("granted_at >= ?", 30.days.ago).count,
+      with_vehicles: count_with_vehicles,
+      average_vehicles_per_access: calculate_average_vehicles
+    }
+  end
+
+  # Detectar accesos solapados
+  def overlapping_for_user(user)
+    return @relation.none if user.blank?
+
+    user_accesses = @relation.where(user: user).includes(:organizational_node)
+    overlapping_ids = []
+
+    user_accesses.each do |access|
+      node = access.organizational_node
+
+      user_accesses.each do |other_access|
+        next if access.id == other_access.id
+
+        other_node = other_access.organizational_node
+
+        if node.ancestor_of?(other_node) || node.descendant_of?(other_node)
+          overlapping_ids << access.id
+          overlapping_ids << other_access.id
+        end
+      end
+    end
+
+    @relation = @relation.where(id: overlapping_ids.uniq)
+    self
+  end
+
+  # Usuarios con más accesos
+  def top_users(limit = 10)
+    @relation
+      .group(:user_id)
+      .order("COUNT(*) DESC")
+      .limit(limit)
+      .count
+  end
+
+  # Nodos más asignados
+  def top_nodes(limit = 10)
+    @relation
+      .group(:organizational_node_id)
+      .order("COUNT(*) DESC")
+      .limit(limit)
+      .count
+  end
+
+  # Calcular cobertura de visibilidad
+  def visibility_coverage
+    result = {}
+    user_ids = @relation.select(:user_id).distinct.pluck(:user_id)
+
+    user_ids.each do |user_id|
+      user = User.find(user_id)
+      accessible_nodes = user.accessible_nodes
+
+      visible_node_ids = accessible_nodes.flat_map do |node|
+        node.self_and_descendants.pluck(:id)
+      end.uniq
+
+      vehicles_count = Vehicle.where(organizational_node_id: visible_node_ids).count
+
+      result[user_id] = {
+        user: user,
+        direct_nodes: accessible_nodes.count,
+        visible_nodes: visible_node_ids.count,
+        visible_vehicles: vehicles_count
+      }
+    end
+
+    result
+  end
+
+  # Matriz de acceso
+  def access_matrix
+    @relation
+      .includes(:user, :organizational_node)
+      .map do |access|
+        {
+          user_id: access.user_id,
+          user_name: access.user.full_name,
+          user_email: access.user.email,
+          node_id: access.organizational_node_id,
+          node_name: access.organizational_node.name,
+          node_path: access.organizational_node.full_path,
+          level_name: access.organizational_node.organizational_level.name,
+          granted_at: access.granted_at,
+          granted_by: access.granted_by&.full_name
+        }
+      end
+  end
+
+  private
+
+  # Aplica filtros múltiples
+  def apply_filters(filters)
+    result = @relation
+
+    result = for_user(filters[:user]) if filters[:user].present?
+    result = for_node(filters[:node]) if filters[:node].present?
+    result = granted_by(filters[:granted_by]) if filters[:granted_by].present?
+    result = granted_between(filters[:start_date], filters[:end_date]) if filters[:start_date] && filters[:end_date]
+    result = recent(filters[:recent_days]) if filters[:recent_days].present?
+    result = by_level(filters[:level_id]) if filters[:level_id].present?
+    result = covering_vehicles if filters[:covering_vehicles]
+    result = without_vehicles if filters[:without_vehicles]
+    result = redundant_accesses if filters[:redundant]
+    result = ordered_by(filters[:order_by] || "granted_at", filters[:order_direction] || :desc)
+
+    @relation
+  end
+
+  # Cuenta accesos que cubren vehículos
+  def count_with_vehicles
+    node_ids_with_vehicles = Vehicle.kept
+      .select(:organizational_node_id)
+      .distinct
+      .pluck(:organizational_node_id)
+
+    return 0 if node_ids_with_vehicles.empty?
+
+    nodes_and_ancestors = OrganizationalNode.kept
+      .where(id: node_ids_with_vehicles)
+      .flat_map { |n| n.self_and_ancestors.pluck(:id) }
+      .uniq
+
+    @relation.where(organizational_node_id: nodes_and_ancestors).count
+  end
+
+  # Calcula promedio de vehículos por acceso
+  def calculate_average_vehicles
+    accesses_with_counts = @relation.includes(:organizational_node).map do |access|
+      access.organizational_node.total_vehicles_count
+    end
+
+    return 0 if accesses_with_counts.empty?
+    (accesses_with_counts.sum.to_f / accesses_with_counts.size).round(2)
+  end
+end
+# app/queries/vehicles_query.rb
+class VehiclesQuery
+  # Inicializa con relación base de vehículos activos
+  def initialize(relation = Vehicle.all)
+    @relation = relation
+  end
+
+  # Método principal que aplica filtros y retorna la relación
+  def call(filters = {})
+    @relation = apply_filters(filters)
+    @relation
+  end
+
+  # Filtrar por matrícula (búsqueda parcial)
+  # Ejemplo: by_plate("ABC") -> encuentra "ABC123", "123ABC", etc.
+  def by_plate(plate)
+    return @relation if plate.blank?
+    @relation = @relation.where("plate ILIKE ?", "%#{sanitize(plate)}%")
+    self
+  end
+
+  # Filtrar por VIN exacto
+  def by_vin(vin)
+    return @relation if vin.blank?
+    @relation = @relation.where(vin: vin.upcase.strip)
+    self
+  end
+
+  # Filtrar por marca (búsqueda parcial)
+  def by_brand(brand)
+    return @relation if brand.blank?
+    @relation = @relation.where("brand ILIKE ?", "%#{sanitize(brand)}%")
+    self
+  end
+
+  # Filtrar por modelo (búsqueda parcial)
+  def by_model(model)
+    return @relation if model.blank?
+    @relation = @relation.where("model ILIKE ?", "%#{sanitize(model)}%")
+    self
+  end
+
+  # Filtrar por año o rango de años
+  # Ejemplos:
+  #   by_year(2020) -> año exacto
+  #   by_year(2020..2023) -> rango
+  #   by_year([2020, 2021, 2023]) -> años específicos
+  def by_year(year)
+    return @relation if year.blank?
+
+    case year
+    when Range
+      @relation = @relation.where(year: year)
+    when Array
+      @relation = @relation.where(year: year)
+    else
+      @relation = @relation.where(year: year)
+    end
+
+    self
+  end
+
+  # Filtrar por nodo organizacional específico (sin herencia)
+  # Solo vehículos asignados directamente a ese nodo
+  def in_node(node_id)
+    return @relation if node_id.blank?
+    @relation = @relation.where(organizational_node_id: node_id)
+    self
+  end
+
+  # Filtrar por nodo y todos sus descendientes (con herencia)
+  # CLAVE: Implementa la visibilidad jerárquica
+  # Ejemplo: Si filtras por "España", verás vehículos de Madrid, Barcelona, etc.
+  def in_branch(node)
+    return @relation if node.blank?
+
+    # Obtener el nodo y todos sus descendientes
+    node_ids = node.self_and_descendants.pluck(:id)
+    @relation = @relation.where(organizational_node_id: node_ids)
+    self
+  end
+
+  # Filtrar por múltiples ramas (múltiples nodos)
+  # Útil cuando un usuario tiene acceso a varios nodos
+  def in_branches(nodes)
+    return @relation if nodes.blank?
+
+    node_ids = nodes.flat_map do |node|
+      node.self_and_descendants.pluck(:id)
+    end.uniq
+
+    @relation = @relation.where(organizational_node_id: node_ids)
+    self
+  end
+
+  # Filtrar por nivel organizacional
+  # Ejemplo: by_level(3) -> vehículos en el nivel "CECO"
+  def by_level(level_id)
+    return @relation if level_id.blank?
+
+    @relation = @relation
+      .joins(:organizational_node)
+      .where(organizational_nodes: { organizational_level_id: level_id })
+    self
+  end
+
+  # MÉTODO CRÍTICO: Filtrar vehículos visibles para un usuario
+  # Implementa la lógica completa de visibilidad basada en herencia jerárquica
+  def visible_for_user(user)
+    return @relation.none if user.blank?
+
+    # Obtener nodos a los que el usuario tiene acceso
+    accessible_nodes = user.accessible_nodes.to_a
+    return @relation.none if accessible_nodes.empty?
+
+    # Obtener vehículos en todas las ramas de esos nodos
+    @relation = in_branches(accessible_nodes)
+    self
+  end
+
+  # Buscar en múltiples campos a la vez (búsqueda general)
+  # Busca en: plate, brand, model, description
+  def search(term)
+    return @relation if term.blank?
+
+    sanitized_term = sanitize(term)
+    @relation = @relation.where(
+      "plate ILIKE :term OR brand ILIKE :term OR model ILIKE :term OR description ILIKE :term",
+      term: "%#{sanitized_term}%"
+    )
+    self
+  end
+
+  # Filtrar por rango de fechas de creación
+  def created_between(start_date, end_date)
+    return @relation if start_date.blank? || end_date.blank?
+
+    @relation = @relation.where(created_at: start_date..end_date)
+    self
+  end
+
+  # Ordenar por diferentes criterios
+  def ordered_by(field, direction = :asc)
+    direction = direction.to_sym
+
+    case field.to_s
+    when "plate"
+      @relation = @relation.order(plate: direction)
+    when "brand"
+      @relation = @relation.order(brand: direction, model: direction)
+    when "year"
+      @relation = @relation.order(year: direction)
+    when "created_at"
+      @relation = @relation.order(created_at: direction)
+    when "node"
+      # Ordenar por nombre del nodo organizacional
+      @relation = @relation
+        .joins(:organizational_node)
+        .order("organizational_nodes.name #{direction}")
+    when "level"
+      # Ordenar por nivel organizacional
+      @relation = @relation
+        .joins(organizational_node: :organizational_level)
+        .order("organizational_levels.level_order #{direction}")
+    else
+      @relation = @relation.order(created_at: :desc)
+    end
+
+    self
+  end
+
+  # Obtener estadísticas de los vehículos en la query
+  def statistics
+    {
+      total_vehicles: @relation.count,
+      by_brand: @relation.reorder(nil).group(:brand).count,
+      by_year: @relation.reorder(year: :desc).group(:year).count,
+      by_level: @relation
+        .joins(organizational_node: :organizational_level)
+        .reorder(nil)
+        .group("organizational_levels.name")
+        .count,
+      oldest_year: @relation.minimum(:year),
+      newest_year: @relation.maximum(:year),
+      most_recent: @relation.maximum(:created_at),
+      nodes_count: @relation.select(:organizational_node_id).distinct.count
+    }
+  end
+
+  # Agrupar vehículos por nodo organizacional
+  # Retorna hash: { node_id => [vehicles] }
+  def group_by_node
+    @relation
+      .includes(:organizational_node)
+      .group_by(&:organizational_node_id)
+  end
+
+  # Agrupar vehículos por nivel organizacional
+  # Retorna hash: { level_name => [vehicles] }
+  def group_by_level
+    @relation
+      .includes(organizational_node: :organizational_level)
+      .group_by { |v| v.organizational_node.organizational_level.name }
+  end
+
+  # Contar vehículos por nodo
+  # Retorna hash: { node_id => count }
+  def count_by_node
+    @relation.group(:organizational_node_id).count
+  end
+
+  # Contar vehículos por marca
+  def count_by_brand
+    @relation.group(:brand).count
+  end
+
+  # Obtener vehículos duplicados por matrícula
+  # Útil para detectar inconsistencias
+  def duplicated_plates
+    plates = @relation
+      .group(:plate)
+      .having("COUNT(*) > 1")
+      .pluck(:plate)
+
+    @relation.where(plate: plates).order(:plate)
+  end
+
+  # Vehículos sin información completa
+  # (sin marca, modelo o año)
+  def incomplete_data
+    @relation.where(
+      "brand IS NULL OR model IS NULL OR year IS NULL"
+    )
+    self
+  end
+
+  # Vehículos creados recientemente (últimos N días)
+  def recent(days = 7)
+    @relation = @relation.where("created_at >= ?", days.days.ago)
+    self
+  end
+
+  private
+
+  # Aplica múltiples filtros desde un hash
+  def apply_filters(filters)
+    result = @relation
+
+    result = by_plate(filters[:plate]) if filters[:plate].present?
+    result = by_vin(filters[:vin]) if filters[:vin].present?
+    result = by_brand(filters[:brand]) if filters[:brand].present?
+    result = by_model(filters[:model]) if filters[:model].present?
+    result = by_year(filters[:year]) if filters[:year].present?
+    result = in_node(filters[:node_id]) if filters[:node_id].present?
+    result = in_branch(filters[:branch_node]) if filters[:branch_node].present?
+    result = by_level(filters[:level_id]) if filters[:level_id].present?
+    result = visible_for_user(filters[:user]) if filters[:user].present?
+    result = search(filters[:search]) if filters[:search].present?
+    result = created_between(filters[:start_date], filters[:end_date]) if filters[:start_date] && filters[:end_date]
+    result = recent(filters[:recent_days]) if filters[:recent_days].present?
+    result = incomplete_data if filters[:incomplete_data]
+    result = ordered_by(filters[:order_by] || "created_at", filters[:order_direction] || :desc)
+
+    @relation
+  end
+
+  # Sanitiza input para evitar SQL injection
+  def sanitize(value)
+    ActiveRecord::Base.sanitize_sql_like(value)
+  end
+end

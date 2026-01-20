@@ -35,7 +35,7 @@ class OrganizationalNode < ApplicationRecord
 
   # Obtener cantidad de vehículos asignados directamente
   def vehicles_count
-    vehicles.count
+    self[:vehicles_count] || 0
   end
 
   # Obtener cantidad de vehículos en toda la rama (incluyendo descendientes)
