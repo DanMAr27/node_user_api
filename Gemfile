@@ -52,7 +52,7 @@ gem "dotenv-rails", "~> 3.1"
 gem "sprockets-rails"
 gem "kaminari"
 gem "faraday", "~> 2.7"
-gem "ancestry", "~> 4.3" # Árboles jerárquicos (nodos organizacionales)
+gem "ancestry", "~> 5.0" # Árboles jerárquicos (nodos organizacionales)
 
 group :development, :test do
   # See https://guides.rubyonrails.org/debugging_rails_applications.html#debugging-with-the-debug-gem
